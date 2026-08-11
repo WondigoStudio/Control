@@ -1,35 +1,39 @@
-const nodemailer = require('nodemailer');
+const fetch = require('node-fetch');
 
-const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
-const SMTP_PORT = process.env.SMTP_PORT || 465;
-const SMTP_USER = process.env.SMTP_USER;       // твой email, с которого отправляются письма
-const SMTP_PASS = process.env.SMTP_PASS;       // пароль приложения (не обычный пароль!)
-const NOTIFY_EMAIL_TO = process.env.NOTIFY_EMAIL_TO; // куда слать уведомления (может совпадать с SMTP_USER)
-
-let transporter = null;
-if (SMTP_USER && SMTP_PASS) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT),
-    secure: Number(SMTP_PORT) === 465, // true для 465 (SSL), false для 587 (STARTTLS)
-    auth: { user: SMTP_USER, pass: SMTP_PASS },
-    connectionTimeout: 10000,
-  });
-}
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const NOTIFY_EMAIL_TO = process.env.NOTIFY_EMAIL_TO;
+// Адрес отправителя. По умолчанию используем тестовый домен Resend —
+// он работает без верификации собственного домена.
+const NOTIFY_EMAIL_FROM = process.env.NOTIFY_EMAIL_FROM || 'Status Monitor <onboarding@resend.dev>';
 
 async function notify(subject, text) {
-  if (!transporter || !NOTIFY_EMAIL_TO) {
+  if (!RESEND_API_KEY || !NOTIFY_EMAIL_TO) {
     console.log('[notify] (Email не настроен) ' + subject + ' — ' + text);
     return;
   }
   try {
-    const info = await transporter.sendMail({
-      from: `"Status Monitor" <${SMTP_USER}>`,
-      to: NOTIFY_EMAIL_TO,
-      subject,
-      text,
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: NOTIFY_EMAIL_FROM,
+        to: [NOTIFY_EMAIL_TO],
+        subject,
+        text,
+      }),
     });
-    console.log('[notify] Письмо отправлено, messageId:', info.messageId, '→', NOTIFY_EMAIL_TO);
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.error('[notify] Ошибка отправки email:', data.message || JSON.stringify(data));
+      return;
+    }
+
+    console.log('[notify] Письмо отправлено, id:', data.id, '→', NOTIFY_EMAIL_TO);
   } catch (e) {
     console.error('[notify] Ошибка отправки email:', e.message);
   }
