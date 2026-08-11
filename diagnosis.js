@@ -1,3 +1,28 @@
+// Распознавание типовых страниц "аккаунт приостановлен" — актуально для
+// бесплатных хостингов (InfinityFree и подобных), которые вместо ошибки
+// показывают HTTP 200 с генерической страницей-заглушкой. Без этой проверки
+// такие падения выглядели бы как "сайт работает".
+const SUSPENSION_SIGNATURES = [
+  'account has been suspended',
+  'this account has been suspended',
+  'account suspended',
+  'website has been suspended',
+  'hosting account is disabled',
+  'domain has expired',
+  'this domain has expired',
+  'suspected malicious activity',
+  'account associated with this website has been suspended',
+];
+
+function detectSuspensionSignature(bodyText) {
+  if (!bodyText) return null;
+  const lower = bodyText.toLowerCase();
+  for (const phrase of SUSPENSION_SIGNATURES) {
+    if (lower.includes(phrase)) return phrase;
+  }
+  return null;
+}
+
 // Переводит сырую ошибку/статус-код в ОДНУ итоговую машиночитаемую категорию
 // причины падения (для программной обработки — например, в Incident lifecycle
 // на будущих этапах) + человеко-понятное объяснение и рекомендацию на русском.
@@ -35,6 +60,21 @@ function hostingName(hosting) {
 function diagnose({ error, statusCode, responseMs, timeoutMs, hosting }) {
   const err = (error || '').toLowerCase();
   const hostLabel = hostingName(hosting);
+
+  // Обнаружена типовая страница "аккаунт приостановлен" — проверяем первым,
+  // так как статус-код при этом обычно 200 (страница технически загрузилась)
+  if (err.includes('suspension_page_detected')) {
+    return {
+      category: CATEGORY.SUSPENDED,
+      label: 'Похоже на страницу приостановки аккаунта',
+      explanation: 'Сервер отвечает 200, но содержимое страницы похоже на типовую заглушку "аккаунт приостановлен", которую показывают хостинги вместо реального сайта.',
+      suggestion: hosting === 'infinityfree'
+        ? 'Зайди в панель InfinityFree и проверь статус аккаунта — возможно, превышены лимиты бесплатного тарифа.'
+        : hosting === 'hidden_cloud'
+        ? 'Проверь, не истёк ли бесплатный тариф на Hidden Cloud — требуется ручное продление.'
+        : `Проверь статус аккаунта в панели ${hostLabel} — похоже, сервис приостановлен.`,
+    };
+  }
 
   // Контент не совпал с ожидаемым (expectedContent) — сайт технически
   // отвечает (обычно 200), но нужного текста на странице нет.
@@ -184,4 +224,4 @@ function diagnose({ error, statusCode, responseMs, timeoutMs, hosting }) {
   };
 }
 
-module.exports = { diagnose, CATEGORY };
+module.exports = { diagnose, CATEGORY, detectSuspensionSignature };
