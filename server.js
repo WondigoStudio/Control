@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const { runCheck } = require('./checker');
-const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary } = require('./db');
+const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary, getRestartLog } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,6 +35,7 @@ app.get('/api/monitors', (req, res) => {
       uptime24h: getUptimePercent(m.id, now - day),
       uptime7d: getUptimePercent(m.id, now - week),
       ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
+      hasAutoRestart: !!m.deployHookUrl,
     };
   });
 
@@ -43,6 +44,11 @@ app.get('/api/monitors', (req, res) => {
   }
 
   res.json(data);
+});
+
+app.get('/api/monitors/:id/restarts', (req, res) => {
+  const log = getRestartLog(req.params.id, 10);
+  res.json(log);
 });
 
 app.get('/api/monitors/:id/history', (req, res) => {
@@ -80,9 +86,11 @@ app.get('/api/monitors/:id/heatmap', (req, res) => {
   const heatmap = getDailyUptime(req.params.id, days);
   res.json(heatmap);
 });
+
 app.get('/api/time', (req, res) => {
   res.json({ now: Date.now() });
 });
+
 app.get('/api/summary', (req, res) => {
   const week = 7 * 24 * 60 * 60 * 1000;
   const since = Date.now() - week;
