@@ -81,6 +81,15 @@ function updateSummary(data) {
   }
 }
 
+function sslBadgeHtml(ssl) {
+  if (ssl.error && !ssl.valid) return '';
+  if (ssl.daysLeft === null || ssl.daysLeft === undefined) return '';
+  if (ssl.daysLeft <= 14) {
+    return `<div class="ssl-mini warn">🔒 SSL истекает через ${ssl.daysLeft} дн.</div>`;
+  }
+  return '';
+}
+
 function renderGrid(data) {
   grid.innerHTML = '';
   data.forEach((m) => {
@@ -96,6 +105,7 @@ function renderGrid(data) {
         </div>
         <span class="badge ${m.status}">${statusLabel(m.status)}</span>
       </div>
+      ${m.ssl ? sslBadgeHtml(m.ssl) : ''}
       <div class="card__stats">
         <div>
           <div class="stat__value">${fmtMs(m.lastResponseMs)}</div>
@@ -133,20 +143,71 @@ async function loadDetail(m) {
 
   const days = Math.max(1, Math.round(currentHours / 24));
 
-  const [historyRes, statsRes, incidentsRes] = await Promise.all([
+  const [historyRes, statsRes, incidentsRes, heatmapRes] = await Promise.all([
     fetch(`/api/monitors/${m.id}/history?hours=${currentHours}`),
     fetch(`/api/monitors/${m.id}/stats?hours=${currentHours}`),
     fetch(`/api/monitors/${m.id}/incidents?days=${days}`),
+    fetch(`/api/monitors/${m.id}/heatmap?days=90`),
   ]);
 
   const history = await historyRes.json();
   const stats = await statsRes.json();
   const incidents = await incidentsRes.json();
+  const heatmap = await heatmapRes.json();
 
   renderStats(stats);
   drawChart(history);
   renderLog(history);
   renderIncidents(incidents);
+  renderHeatmap(heatmap);
+  renderSSL(m.ssl);
+}
+
+function renderSSL(ssl) {
+  const box = document.getElementById('sslBox');
+  if (!ssl || (ssl.daysLeft === null && !ssl.error)) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  if (ssl.error && !ssl.valid) {
+    box.className = 'ssl-box danger';
+    box.innerHTML = `🔒 SSL-сертификат: ошибка проверки — ${escapeHtml(ssl.error)}`;
+    return;
+  }
+  const warn = ssl.daysLeft <= 14;
+  box.className = 'ssl-box' + (warn ? ' warn' : ' ok');
+  box.innerHTML = warn
+    ? `🔒 SSL-сертификат истекает через <b>${ssl.daysLeft} дн.</b> — пора продлить`
+    : `🔒 SSL-сертификат действителен ещё ${ssl.daysLeft} дн.`;
+}
+
+function renderHeatmap(days) {
+  const box = document.getElementById('heatmap');
+  if (!days.length) {
+    box.innerHTML = '<div class="empty" style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">Пока нет данных</div>';
+    return;
+  }
+  const map = {};
+  days.forEach((d) => { map[d.day] = d.uptime; });
+
+  const cells = [];
+  const today = new Date();
+  for (let i = 89; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const uptime = map[key];
+    let cls = 'hm-empty';
+    if (uptime !== undefined) {
+      if (uptime >= 99.9) cls = 'hm-100';
+      else if (uptime >= 95) cls = 'hm-95';
+      else if (uptime >= 80) cls = 'hm-80';
+      else cls = 'hm-low';
+    }
+    cells.push(`<div class="hm-cell ${cls}" title="${key}: ${uptime !== undefined ? uptime + '%' : 'нет данных'}"></div>`);
+  }
+  box.innerHTML = cells.join('');
 }
 
 function renderStats(stats) {
@@ -212,13 +273,27 @@ function drawChart(history) {
 
 function renderLog(history) {
   const recent = history.slice(-30).reverse();
-  detailLog.innerHTML = recent.map((h) => `
+  detailLog.innerHTML = recent.map((h) => {
+    let headersLine = '';
+    if (h.response_headers) {
+      try {
+        const hdrs = JSON.parse(h.response_headers);
+        const parts = [];
+        if (hdrs.server) parts.push(`сервер: ${hdrs.server}`);
+        if (hdrs['content-type']) parts.push(`тип: ${hdrs['content-type'].split(';')[0]}`);
+        if (hdrs['content-length']) parts.push(`размер: ${hdrs['content-length']} байт`);
+        if (parts.length) headersLine = `<div class="log-headers">${escapeHtml(parts.join(' · '))}</div>`;
+      } catch (e) {}
+    }
+    return `
     <div class="${h.ok ? 'ok' : 'fail'}">
       <span>${fmtTime(h.ts)}</span>
       <span>${h.ok ? '✓ OK' : '✗ ' + (h.error || 'ошибка')}</span>
       <span>${fmtMs(h.response_ms)}</span>
     </div>
-  `).join('');
+    ${headersLine}
+  `;
+  }).join('');
 }
 
 function escapeHtml(str) {
