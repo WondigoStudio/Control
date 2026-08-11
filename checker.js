@@ -1,8 +1,10 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult } = require('./db');
 const { notify } = require('./notifier');
+const { detectSuspensionSignature } = require('./diagnosis');
+const { checkMultiLocation } = require('./multiLocationCheck');
 
 function checkSSLCert(hostname) {
   return new Promise((resolve) => {
@@ -66,9 +68,15 @@ async function checkHttp(monitor) {
       contentOk = res.body.includes(monitor.expectedContent);
     }
 
-    const ok = statusOk && (contentOk === null || contentOk === true);
+    // Проверяем на типовую страницу "аккаунт приостановлен" ВСЕГДА, даже
+    // если статус-код в норме — бесплатные хостинги часто отдают 200
+    // с генерической заглушкой вместо реального сайта.
+    const suspensionMatch = detectSuspensionSignature(res.body);
+
+    const ok = statusOk && (contentOk === null || contentOk === true) && !suspensionMatch;
     let error = null;
-    if (!statusOk) error = `Unexpected status ${res.statusCode}`;
+    if (suspensionMatch) error = `SUSPENSION_PAGE_DETECTED: ${suspensionMatch}`;
+    else if (!statusOk) error = `Unexpected status ${res.statusCode}`;
     else if (contentOk === false) error = `Ожидаемый текст "${monitor.expectedContent}" не найден на странице`;
 
     return {
@@ -240,7 +248,53 @@ async function runCheck(monitor) {
     runRecovery(monitor, recovery).catch(() => {});
   }
 
+  // Для мониторов, где автовосстановление недоступно (provider: "none") —
+  // компенсируем это углублённой диагностикой: проверяем из разных локаций,
+  // чтобы отличить реальное падение хостинга от локального глюка нашего
+  // единственного сервера-наблюдателя. Срабатывает один раз за падение.
+  if (
+    recovery.provider === 'none' &&
+    monitor.type === 'http' &&
+    newStatus === 'down' &&
+    consecutiveFails === recovery.afterFails &&
+    !restartAttempted
+  ) {
+    markRestartAttempted(monitor.id);
+    runAutoDiagnostics(monitor).catch(() => {});
+  }
+
   return result;
+}
+
+async function runAutoDiagnostics(monitor) {
+  try {
+    const results = await checkMultiLocation(monitor.url);
+    saveMultiLocationResult(monitor.id, results);
+
+    const total = results.length;
+    const downCount = results.filter((r) => r.ok === false).length;
+    const upCount = results.filter((r) => r.ok === true).length;
+
+    let verdict;
+    if (downCount === total) {
+      verdict = `Все ${total} проверенных локации подтверждают недоступность — это реальное падение, а не локальная проблема мониторинга.`;
+    } else if (upCount === total) {
+      verdict = `Все ${total} проверенных локации показывают, что сайт ДОСТУПЕН — возможно, это временный сбой именно нашего сервера-наблюдателя (Render), а не реальная проблема сайта.`;
+    } else {
+      verdict = `Смешанная картина: ${downCount} из ${total} локаций видят падение, ${upCount} — доступность. Может указывать на гео-специфичную проблему (например, блокировку в отдельных странах) или нестабильность.`;
+    }
+
+    const locationsList = results
+      .map((r) => `${r.label}: ${r.ok === true ? `✓ доступен (${r.responseMs} мс)` : r.ok === false ? `✗ недоступен (${r.error || 'ошибка'})` : '— нет данных'}`)
+      .join('\n');
+
+    await notify(
+      `🔍 Диагностика: ${monitor.name}`,
+      `Автоматическая проверка из разных локаций для "${monitor.name}" (автовосстановление для этого хостинга недоступно).\n\n${verdict}\n\nПодробности по локациям:\n${locationsList}`
+    );
+  } catch (e) {
+    console.error(`[AutoDiagnostics] Ошибка для ${monitor.id}:`, e.message);
+  }
 }
 
 module.exports = { runCheck };
