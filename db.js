@@ -29,14 +29,67 @@ CREATE TABLE IF NOT EXISTS monitor_state (
   last_status TEXT NOT NULL DEFAULT 'unknown',
   last_change_ts INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS ssl_status (
+  monitor_id TEXT PRIMARY KEY,
+  valid INTEGER,
+  expires_at INTEGER,
+  days_left INTEGER,
+  checked_at INTEGER,
+  error TEXT
+);
 `);
 
-function insertCheck(monitorId, ok, responseMs, statusCode, error) {
+// Миграция: добавляем новые колонки в уже существующие БД без пересоздания таблицы
+try { db.exec("ALTER TABLE checks ADD COLUMN response_headers TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE checks ADD COLUMN content_ok INTEGER"); } catch (e) {}
+
+function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk) {
   const stmt = db.prepare(`
-    INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(monitorId, Date.now(), ok ? 1 : 0, responseMs ?? null, statusCode ?? null, error ?? null);
+  stmt.run(
+    monitorId, Date.now(), ok ? 1 : 0, responseMs ?? null, statusCode ?? null, error ?? null,
+    responseHeaders ? JSON.stringify(responseHeaders) : null,
+    contentOk === undefined || contentOk === null ? null : (contentOk ? 1 : 0)
+  );
+}
+
+function setSSLStatus(monitorId, valid, expiresAt, daysLeft, error) {
+  db.prepare(`
+    INSERT INTO ssl_status (monitor_id, valid, expires_at, days_left, checked_at, error)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(monitor_id) DO UPDATE SET
+      valid = excluded.valid,
+      expires_at = excluded.expires_at,
+      days_left = excluded.days_left,
+      checked_at = excluded.checked_at,
+      error = excluded.error
+  `).run(monitorId, valid ? 1 : 0, expiresAt ?? null, daysLeft ?? null, Date.now(), error ?? null);
+}
+
+function getSSLStatus(monitorId) {
+  return db.prepare(`SELECT * FROM ssl_status WHERE monitor_id = ?`).get(monitorId);
+}
+
+function getDailyUptime(monitorId, days) {
+  const since = Date.now() - days * 24 * 60 * 60 * 1000;
+  const rows = db.prepare(`
+    SELECT
+      date(ts / 1000, 'unixepoch') as day,
+      COUNT(*) as total,
+      SUM(ok) as up
+    FROM checks
+    WHERE monitor_id = ? AND ts >= ?
+    GROUP BY day
+    ORDER BY day ASC
+  `).all(monitorId, since);
+
+  return rows.map((r) => ({
+    day: r.day,
+    uptime: r.total ? Math.round((r.up / r.total) * 10000) / 100 : null,
+  }));
 }
 
 function getLastCheck(monitorId) {
@@ -126,4 +179,7 @@ module.exports = {
   setState,
   getIncidents,
   getResponseStats,
+  setSSLStatus,
+  getSSLStatus,
+  getDailyUptime,
 };
