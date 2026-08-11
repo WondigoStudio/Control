@@ -1,19 +1,19 @@
 [
   {
-    "id": "my-site",
-    "name": "Мой сайт",
+    "id": "quizwin",
+    "name": "QuizWin",
     "type": "http",
-    "url": "https://example.com",
+    "url": "https://quizwin.free.nf/",
     "intervalSec": 60,
     "timeoutMs": 8000,
     "expectedStatus": 200
   },
   {
-    "id": "my-telegram-bot",
-    "name": "Мой Telegram-бот",
+    "id": "check-bot",
+    "name": "CheckBot",
     "type": "telegram_bot",
-    "botToken": "PUT_BOT_TOKEN_HERE",
-    "intervalSec": 120,
+    "botToken": "8325253736:AAFl045ZAY-v_UK9X98m62qboolhsMJRr9Q",
+    "intervalSec": 60,
     "timeoutMs": 8000
   },
   {
