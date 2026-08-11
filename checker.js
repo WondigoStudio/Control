@@ -3,7 +3,6 @@ const tls = require('tls');
 const { URL } = require('url');
 const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus } = require('./db');
 const { notify } = require('./notifier');
-const { timingFetch } = require('./timingFetch');
 
 function checkSSLCert(hostname) {
   return new Promise((resolve) => {
@@ -36,6 +35,7 @@ async function runSSLCheck(monitor) {
     const result = await checkSSLCert(hostname);
     setSSLStatus(monitor.id, result.valid, result.expiresAt, result.daysLeft, result.error);
 
+    // Уведомляем один раз, когда сертификат приближается к истечению (<=14 дней)
     if (result.valid && result.daysLeft <= 14) {
       const prev = getSSLStatus(monitor.id);
       const alreadyWarned = prev && prev.days_left !== null && prev.days_left <= 14;
@@ -50,6 +50,8 @@ async function runSSLCheck(monitor) {
     setSSLStatus(monitor.id, false, null, null, e.message);
   }
 }
+
+const { timingFetch } = require('./timingFetch');
 
 async function checkHttp(monitor) {
   const start = Date.now();
@@ -103,16 +105,77 @@ async function checkTelegramBot(monitor) {
   }
 }
 
-async function attemptRestart(monitor) {
-  if (!monitor.deployHookUrl) return;
+// --- Recovery Providers ---
+// Определяет, ЧТО умеет делать монитор при падении. "none" не означает
+// бездействие — диагностика и уведомление всё равно работают, просто
+// без попытки автоматически перезапустить сервис.
+//
+// Формат в monitors.json:
+// "recovery": {
+//   "provider": "render" | "none" | "docker" | "systemd" | "pm2" | "custom",
+//   "enabled": true,
+//   "afterFails": 3,
+//   "deployHookUrl": "..."   // только для provider: "render"
+// }
+//
+// Обратная совместимость: если "recovery" не задан, но есть старое поле
+// deployHookUrl — трактуем как provider: "render" автоматически.
+function resolveRecovery(monitor) {
+  if (monitor.recovery) {
+    return {
+      provider: monitor.recovery.provider || 'none',
+      enabled: monitor.recovery.enabled !== false,
+      afterFails: monitor.recovery.afterFails || 3,
+      deployHookUrl: monitor.recovery.deployHookUrl || monitor.deployHookUrl,
+    };
+  }
+  if (monitor.deployHookUrl) {
+    return {
+      provider: 'render',
+      enabled: true,
+      afterFails: monitor.restartAfterFails || 3,
+      deployHookUrl: monitor.deployHookUrl,
+    };
+  }
+  return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null };
+}
+
+async function runRecovery(monitor, recovery) {
+  switch (recovery.provider) {
+    case 'render':
+      if (!recovery.deployHookUrl) {
+        console.error(`[Recovery] provider "render" для "${monitor.name}" без deployHookUrl — пропускаю`);
+        return;
+      }
+      await restartViaRenderHook(monitor, recovery.deployHookUrl);
+      return;
+
+    case 'docker':
+    case 'systemd':
+    case 'pm2':
+    case 'custom':
+      // Требуют агента на стороне сервера (см. дорожную карту) — пока не реализовано.
+      console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается — нужен агент на сервере.`);
+      logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`);
+      return;
+
+    case 'none':
+    default:
+      // Ничего не делаем — восстановление недоступно для этого хостинга.
+      // Диагностика и уведомления при этом продолжают работать как обычно.
+      return;
+  }
+}
+
+async function restartViaRenderHook(monitor, deployHookUrl) {
   try {
-    const res = await fetch(monitor.deployHookUrl, { method: 'POST' });
+    const res = await fetch(deployHookUrl, { method: 'POST' });
     const ok = res.ok;
     logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`);
     await notify(
       ok ? `🔁 Автоперезапуск: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}`,
       ok
-        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через deploy hook.\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через Render deploy hook.\nВремя: ${new Date().toLocaleString('ru-RU')}`
         : `Попытка автоперезапуска "${monitor.name}" не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
     );
   } catch (e) {
@@ -134,6 +197,7 @@ async function runCheck(monitor) {
 
   insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing);
 
+  // SSL-проверка не нужна каждый раз — раз в сутки на монитор достаточно
   const lastSSL = getSSLStatus(monitor.id);
   if (!lastSSL || Date.now() - lastSSL.checked_at > 24 * 60 * 60 * 1000) {
     runSSLCheck(monitor).catch(() => {});
@@ -156,15 +220,17 @@ async function runCheck(monitor) {
     }
   }
 
-  const restartThreshold = monitor.restartAfterFails || 3;
+  // Автоперезапуск: смотрим, что умеет делать этот монитор при падении
+  const recovery = resolveRecovery(monitor);
   if (
+    recovery.enabled &&
+    recovery.provider !== 'none' &&
     newStatus === 'down' &&
-    monitor.deployHookUrl &&
-    consecutiveFails === restartThreshold &&
+    consecutiveFails === recovery.afterFails &&
     !restartAttempted
   ) {
     markRestartAttempted(monitor.id);
-    attemptRestart(monitor).catch(() => {});
+    runRecovery(monitor, recovery).catch(() => {});
   }
 
   return result;
