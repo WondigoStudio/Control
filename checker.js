@@ -120,6 +120,10 @@ async function checkTelegramBot(monitor) {
 //
 // Обратная совместимость: если "recovery" не задан, но есть старое поле
 // deployHookUrl — трактуем как provider: "render" автоматически.
+// Хостинги, у которых заведомо нет публичного API для управления сервером —
+// автоперезапуск для них технически невозможен без ручного вмешательства.
+const UNMANAGED_HOSTINGS = ['infinityfree', 'hidden_cloud'];
+
 function resolveRecovery(monitor) {
   if (monitor.recovery) {
     return {
@@ -136,6 +140,9 @@ function resolveRecovery(monitor) {
       afterFails: monitor.restartAfterFails || 3,
       deployHookUrl: monitor.deployHookUrl,
     };
+  }
+  if (monitor.hosting && UNMANAGED_HOSTINGS.includes(monitor.hosting)) {
+    return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, reason: `Хостинг "${monitor.hosting}" не предоставляет API для автоматического восстановления` };
   }
   return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null };
 }
