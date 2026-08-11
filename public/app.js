@@ -238,16 +238,62 @@ function drawChart(history) {
     detailChart.innerHTML = '<text x="10" y="80" fill="#767d82" font-size="12">Пока нет данных</text>';
     return;
   }
-  const w = 640, h = 140, pad = 10;
-  const values = history.map((h) => h.response_ms || 0);
-  const max = Math.max(...values, 1);
-  const stepX = (w - pad * 2) / Math.max(history.length - 1, 1);
 
+  const w = 640, h = 160;
+  const padLeft = 46, padRight = 10, padTop = 10, padBottom = 24;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
+
+  const values = history.map((hh) => hh.response_ms || 0);
+  const max = Math.max(...values, 1);
+  const niceMax = Math.ceil(max / 100) * 100 || 100;
+
+  const stepX = plotW / Math.max(history.length - 1, 1);
   const svgNS = 'http://www.w3.org/2000/svg';
 
+  const ySteps = 4;
+  for (let i = 0; i <= ySteps; i++) {
+    const val = Math.round((niceMax / ySteps) * i);
+    const y = padTop + plotH - (val / niceMax) * plotH;
+
+    const gridLine = document.createElementNS(svgNS, 'line');
+    gridLine.setAttribute('x1', padLeft);
+    gridLine.setAttribute('x2', w - padRight);
+    gridLine.setAttribute('y1', y);
+    gridLine.setAttribute('y2', y);
+    gridLine.setAttribute('stroke', '#22262b');
+    gridLine.setAttribute('stroke-width', '1');
+    detailChart.appendChild(gridLine);
+
+    const label = document.createElementNS(svgNS, 'text');
+    label.setAttribute('x', padLeft - 8);
+    label.setAttribute('y', y + 3);
+    label.setAttribute('text-anchor', 'end');
+    label.setAttribute('font-size', '9');
+    label.setAttribute('fill', '#767d82');
+    label.setAttribute('font-family', 'JetBrains Mono, monospace');
+    label.textContent = val;
+    detailChart.appendChild(label);
+  }
+
+  const xLabelIndices = [0, Math.floor((history.length - 1) / 2), history.length - 1];
+  xLabelIndices.forEach((idx) => {
+    const item = history[idx];
+    const x = padLeft + idx * stepX;
+    const label = document.createElementNS(svgNS, 'text');
+    label.setAttribute('x', x);
+    label.setAttribute('y', h - 6);
+    label.setAttribute('text-anchor', idx === 0 ? 'start' : idx === history.length - 1 ? 'end' : 'middle');
+    label.setAttribute('font-size', '9');
+    label.setAttribute('fill', '#767d82');
+    label.setAttribute('font-family', 'JetBrains Mono, monospace');
+    label.textContent = fmtChartTime(item.ts);
+    detailChart.appendChild(label);
+  });
+
   const pathPoints = history.map((hItem, i) => {
-    const x = pad + i * stepX;
-    const y = pad + (1 - (hItem.response_ms || 0) / max) * (h - pad * 2);
+    const x = padLeft + i * stepX;
+    const y = padTop + plotH - ((hItem.response_ms || 0) / niceMax) * plotH;
     return `${x},${y}`;
   });
 
@@ -260,15 +306,32 @@ function drawChart(history) {
 
   history.forEach((hItem, i) => {
     if (!hItem.ok) {
-      const x = pad + i * stepX;
+      const x = padLeft + i * stepX;
       const dot = document.createElementNS(svgNS, 'circle');
       dot.setAttribute('cx', x);
-      dot.setAttribute('cy', h - pad);
+      dot.setAttribute('cy', padTop + plotH);
       dot.setAttribute('r', 3);
       dot.setAttribute('fill', '#e35b52');
       detailChart.appendChild(dot);
     }
   });
+
+  const axisLabel = document.createElementNS(svgNS, 'text');
+  axisLabel.setAttribute('x', 4);
+  axisLabel.setAttribute('y', 12);
+  axisLabel.setAttribute('font-size', '9');
+  axisLabel.setAttribute('fill', '#767d82');
+  axisLabel.setAttribute('font-family', 'JetBrains Mono, monospace');
+  axisLabel.textContent = 'мс';
+  detailChart.appendChild(axisLabel);
+}
+
+function fmtChartTime(ts) {
+  const d = new Date(ts);
+  if (currentHours <= 24) {
+    return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 }
 
 function renderLog(history) {
