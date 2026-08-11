@@ -2,23 +2,57 @@ const grid = document.getElementById('grid');
 const globalDot = document.getElementById('globalDot');
 const summaryText = document.getElementById('summaryText');
 const clockEl = document.getElementById('clock');
+const sortBtn = document.getElementById('sortBtn');
 
 const detail = document.getElementById('detail');
 const detailTitle = document.getElementById('detailTitle');
 const detailMeta = document.getElementById('detailMeta');
 const detailChart = document.getElementById('detailChart');
 const detailLog = document.getElementById('detailLog');
+const detailStats = document.getElementById('detailStats');
+const detailIncidents = document.getElementById('detailIncidents');
+const periodSwitch = document.getElementById('periodSwitch');
+
 document.getElementById('detailClose').onclick = () => (detail.hidden = true);
 detail.addEventListener('click', (e) => { if (e.target === detail) detail.hidden = true; });
 
+let sortByReliability = false;
+let currentMonitor = null;
+let currentHours = 24;
+
+sortBtn.onclick = () => {
+  sortByReliability = !sortByReliability;
+  sortBtn.classList.toggle('active', sortByReliability);
+  loadMonitors();
+};
+
+periodSwitch.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn || !currentMonitor) return;
+  [...periodSwitch.children].forEach((b) => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentHours = parseInt(btn.dataset.hours, 10);
+  loadDetail(currentMonitor);
+});
+
 function fmtTime(ts) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString('ru-RU');
+  return new Date(ts).toLocaleString('ru-RU');
 }
 
 function fmtMs(ms) {
   if (ms === null || ms === undefined) return '—';
   return `${ms} мс`;
+}
+
+function fmtDuration(ms) {
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `${min} мин`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h < 24) return `${h} ч ${m} мин`;
+  const d = Math.floor(h / 24);
+  return `${d} д ${h % 24} ч`;
 }
 
 function statusLabel(s) {
@@ -28,7 +62,8 @@ function statusLabel(s) {
 }
 
 async function loadMonitors() {
-  const res = await fetch('/api/monitors');
+  const url = sortByReliability ? '/api/monitors?sort=reliability' : '/api/monitors';
+  const res = await fetch(url);
   const data = await res.json();
   renderGrid(data);
   updateSummary(data);
@@ -82,18 +117,58 @@ function renderGrid(data) {
 }
 
 async function openDetail(m) {
+  currentMonitor = m;
+  currentHours = 24;
+  [...periodSwitch.children].forEach((b) => b.classList.toggle('active', b.dataset.hours === '24'));
   detail.hidden = false;
   detailTitle.textContent = m.name;
+  await loadDetail(m);
+}
+
+async function loadDetail(m) {
   detailMeta.innerHTML = `
     <span>статус: ${statusLabel(m.status)}</span>
     <span>последняя проверка: ${fmtTime(m.lastCheckedAt)}</span>
-    <span>аптайм 24ч: ${m.uptime24h ?? '—'}%</span>
   `;
 
-  const res = await fetch(`/api/monitors/${m.id}/history?hours=24`);
-  const history = await res.json();
+  const days = Math.max(1, Math.round(currentHours / 24));
+
+  const [historyRes, statsRes, incidentsRes] = await Promise.all([
+    fetch(`/api/monitors/${m.id}/history?hours=${currentHours}`),
+    fetch(`/api/monitors/${m.id}/stats?hours=${currentHours}`),
+    fetch(`/api/monitors/${m.id}/incidents?days=${days}`),
+  ]);
+
+  const history = await historyRes.json();
+  const stats = await statsRes.json();
+  const incidents = await incidentsRes.json();
+
+  renderStats(stats);
   drawChart(history);
   renderLog(history);
+  renderIncidents(incidents);
+}
+
+function renderStats(stats) {
+  detailStats.innerHTML = `
+    <div class="stat-box"><div class="v">${fmtMs(stats.avg)}</div><div class="l">среднее</div></div>
+    <div class="stat-box"><div class="v">${fmtMs(stats.min)}</div><div class="l">минимум</div></div>
+    <div class="stat-box"><div class="v">${fmtMs(stats.max)}</div><div class="l">максимум</div></div>
+  `;
+}
+
+function renderIncidents(incidents) {
+  if (!incidents.length) {
+    detailIncidents.innerHTML = '<div class="empty">Падений не зафиксировано за этот период</div>';
+    return;
+  }
+  detailIncidents.innerHTML = incidents.map((inc) => `
+    <div class="incident ${inc.ongoing ? 'ongoing' : ''}">
+      <span>${fmtTime(inc.start)}</span>
+      <span class="err">${escapeHtml(inc.error || 'ошибка')}</span>
+      <span class="dur">${fmtDuration(inc.durationMs)}</span>
+    </div>
+  `).join('');
 }
 
 function drawChart(history) {
