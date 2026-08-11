@@ -234,6 +234,92 @@ html, body {
 
 [hidden] { display: none !important; }
 
+.sort-btn {
+  background: none;
+  border: 1px solid var(--panel-border);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.sort-btn:hover, .sort-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.period-switch {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.period-switch button {
+  background: none;
+  border: 1px solid var(--panel-border);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.period-switch button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(242, 181, 68, 0.08);
+}
+
+.detail__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.detail__stats .stat-box {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+}
+.detail__stats .stat-box .v { font-size: 16px; font-weight: 700; }
+.detail__stats .stat-box .l { font-size: 10px; color: var(--text-dim); text-transform: uppercase; margin-top: 2px; }
+
+.section-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin: 20px 0 10px;
+  font-weight: 600;
+}
+
+.incidents {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.incidents .empty { color: var(--text-dim); }
+.incidents .incident {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--panel-border);
+  color: var(--text);
+}
+.incidents .incident:last-child { border-bottom: none; }
+.incidents .incident .dur { color: var(--down); font-weight: 700; white-space: nowrap; }
+.incidents .incident .err {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.incidents .incident.ongoing .dur::after { content: ' (сейчас)'; font-weight: 400; }
+
 @media (max-width: 480px) {
   .topbar { padding: 14px 16px; }
   .grid { padding: 16px; gap: 12px; }
