@@ -3,15 +3,7 @@ const tls = require('tls');
 const { URL } = require('url');
 const { insertCheck, getState, setState, setSSLStatus, getSSLStatus } = require('./db');
 const { notify } = require('./notifier');
-
-function pickHeaders(headers) {
-  if (!headers) return null;
-  return {
-    server: headers.get('server') || null,
-    'content-type': headers.get('content-type') || null,
-    'content-length': headers.get('content-length') || null,
-  };
-}
+const { timingFetch } = require('./timingFetch');
 
 function checkSSLCert(hostname) {
   return new Promise((resolve) => {
@@ -62,36 +54,36 @@ async function runSSLCheck(monitor) {
 async function checkHttp(monitor) {
   const start = Date.now();
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), monitor.timeoutMs || 8000);
-    const res = await fetch(monitor.url, { signal: controller.signal, redirect: 'follow' });
-    clearTimeout(timeout);
+    const res = await timingFetch(monitor.url, { timeoutMs: monitor.timeoutMs || 8000 });
     const responseMs = Date.now() - start;
     const expected = monitor.expectedStatus || 200;
-    const statusOk = res.status === expected || (Array.isArray(expected) ? expected.includes(res.status) : res.status < 400);
+    const statusOk = res.statusCode === expected || (Array.isArray(expected) ? expected.includes(res.statusCode) : res.statusCode < 400);
 
     let contentOk = null;
-    let bodyText = null;
     if (monitor.expectedContent) {
-      bodyText = await res.text();
-      contentOk = bodyText.includes(monitor.expectedContent);
+      contentOk = res.body.includes(monitor.expectedContent);
     }
 
     const ok = statusOk && (contentOk === null || contentOk === true);
     let error = null;
-    if (!statusOk) error = `Unexpected status ${res.status}`;
+    if (!statusOk) error = `Unexpected status ${res.statusCode}`;
     else if (contentOk === false) error = `Ожидаемый текст "${monitor.expectedContent}" не найден на странице`;
 
     return {
       ok,
       responseMs,
-      statusCode: res.status,
+      statusCode: res.statusCode,
       error,
-      headers: pickHeaders(res.headers),
+      headers: {
+        server: res.headers['server'] || null,
+        'content-type': res.headers['content-type'] || null,
+        'content-length': res.headers['content-length'] || null,
+      },
       contentOk,
+      timing: res.timing,
     };
   } catch (e) {
-    return { ok: false, responseMs: Date.now() - start, statusCode: null, error: e.message, headers: null, contentOk: null };
+    return { ok: false, responseMs: Date.now() - start, statusCode: null, error: e.message, headers: null, contentOk: null, timing: null };
   }
 }
 
@@ -119,7 +111,7 @@ async function runCheck(monitor) {
     result = await checkHttp(monitor);
   }
 
-  insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk);
+  insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing);
 
   const lastSSL = getSSLStatus(monitor.id);
   if (!lastSSL || Date.now() - lastSSL.checked_at > 24 * 60 * 60 * 1000) {
