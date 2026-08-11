@@ -162,7 +162,12 @@ function renderGrid(data) {
           <div class="stat__label">аптайм 7д</div>
         </div>
       </div>
-      ${m.status === 'down' && m.lastError ? `<div class="card__error">${escapeHtml(m.lastError)}</div>` : ''}
+      ${m.status === 'down' && m.lastErrorDiagnosis ? `
+        <div class="card__error">
+          <div class="diag-label">⚠️ ${escapeHtml(m.lastErrorDiagnosis.label)}</div>
+          <div class="diag-explain">${escapeHtml(m.lastErrorDiagnosis.explanation)}</div>
+        </div>
+      ` : (m.status === 'down' && m.lastError ? `<div class="card__error">${escapeHtml(m.lastError)}</div>` : '')}
     `;
     grid.appendChild(card);
   });
@@ -179,6 +184,7 @@ async function openDetail(m) {
   if (detailRefreshTimer) clearInterval(detailRefreshTimer);
   detailRefreshTimer = setInterval(async () => {
     if (!currentMonitor || detail.hidden) return;
+    // Подтягиваем свежий статус монитора, затем перезагружаем детали
     const res = await fetch('/api/monitors');
     const list = await res.json();
     const fresh = list.find((x) => x.id === currentMonitor.id);
@@ -219,7 +225,51 @@ async function loadDetail(m) {
   renderSSL(m.ssl);
   renderTiming(history);
   renderRestarts(restarts);
+
+  const cachedLocations = await fetch(`/api/monitors/${m.id}/locations`).then((r) => r.json());
+  renderLocations(cachedLocations);
 }
+
+function renderLocations(data) {
+  const box = document.getElementById('locationsResults');
+  if (!data || !data.results) {
+    box.innerHTML = '<div class="empty" style="font-family:var(--mono);font-size:12px;color:var(--text-dim);margin-top:8px;">Ещё не проверялось — нажми кнопку выше</div>';
+    return;
+  }
+  const ageMin = Math.round((Date.now() - data.ts) / 60000);
+  box.innerHTML = `
+    <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin:8px 0;">Последняя проверка: ${ageMin < 1 ? 'только что' : ageMin + ' мин назад'}</div>
+    <div class="loc-grid">
+      ${data.results.map((r) => `
+        <div class="loc-cell ${r.ok === true ? 'loc-ok' : r.ok === false ? 'loc-down' : 'loc-unknown'}">
+          <div class="loc-label">${escapeHtml(r.label)}</div>
+          <div class="loc-status">${r.ok === true ? `✓ ${r.responseMs} мс` : r.ok === false ? `✗ ${escapeHtml(r.error || 'недоступен')}` : '— нет данных'}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+document.getElementById('checkLocationsBtn').addEventListener('click', async () => {
+  if (!currentMonitor) return;
+  const btn = document.getElementById('checkLocationsBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Проверяю из 6 стран...';
+  try {
+    const res = await fetch(`/api/monitors/${currentMonitor.id}/locations`, { method: 'POST' });
+    const data = await res.json();
+    if (data.error) {
+      document.getElementById('locationsResults').innerHTML = `<div class="empty" style="color:var(--down);">${escapeHtml(data.error)}</div>`;
+    } else {
+      renderLocations(data);
+    }
+  } catch (e) {
+    document.getElementById('locationsResults').innerHTML = `<div class="empty" style="color:var(--down);">Ошибка: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🌍 Проверить сейчас';
+  }
+});
 
 function renderRestarts(restarts) {
   const section = document.getElementById('restartsSection');
@@ -340,10 +390,18 @@ function renderIncidents(incidents) {
     return;
   }
   detailIncidents.innerHTML = incidents.map((inc) => `
-    <div class="incident ${inc.ongoing ? 'ongoing' : ''}">
-      <span>${fmtTime(inc.start)}</span>
-      <span class="err">${escapeHtml(inc.error || 'ошибка')}</span>
-      <span class="dur">${fmtDuration(inc.durationMs)}</span>
+    <div class="incident-block ${inc.ongoing ? 'ongoing' : ''}">
+      <div class="incident">
+        <span>${fmtTime(inc.start)}</span>
+        <span class="err">${inc.diagnosis ? escapeHtml(inc.diagnosis.label) : escapeHtml(inc.error || 'ошибка')}</span>
+        <span class="dur">${fmtDuration(inc.durationMs)}</span>
+      </div>
+      ${inc.diagnosis ? `
+        <div class="incident-diag">
+          <div class="diag-explain">${escapeHtml(inc.diagnosis.explanation)}</div>
+          <div class="diag-suggest">💡 ${escapeHtml(inc.diagnosis.suggestion)}</div>
+        </div>
+      ` : ''}
     </div>
   `).join('');
 }
@@ -367,6 +425,7 @@ function drawChart(history) {
   const stepX = plotW / Math.max(history.length - 1, 1);
   const svgNS = 'http://www.w3.org/2000/svg';
 
+  // Горизонтальная сетка + подписи по оси Y (мс)
   const ySteps = 4;
   for (let i = 0; i <= ySteps; i++) {
     const val = Math.round((niceMax / ySteps) * i);
@@ -392,6 +451,7 @@ function drawChart(history) {
     detailChart.appendChild(label);
   }
 
+  // Подписи по оси X (время) — первая, средняя, последняя точка
   const xLabelIndices = [0, Math.floor((history.length - 1) / 2), history.length - 1];
   xLabelIndices.forEach((idx) => {
     const item = history[idx];
@@ -407,6 +467,7 @@ function drawChart(history) {
     detailChart.appendChild(label);
   });
 
+  // Линия графика
   const pathPoints = history.map((hItem, i) => {
     const x = padLeft + i * stepX;
     const y = padTop + plotH - ((hItem.response_ms || 0) / niceMax) * plotH;
@@ -420,6 +481,7 @@ function drawChart(history) {
   line.setAttribute('stroke-width', '1.5');
   detailChart.appendChild(line);
 
+  // Красные точки на моментах падения
   history.forEach((hItem, i) => {
     if (!hItem.ok) {
       const x = padLeft + i * stepX;
@@ -432,6 +494,7 @@ function drawChart(history) {
     }
   });
 
+  // Подпись оси Y целиком
   const axisLabel = document.createElementNS(svgNS, 'text');
   axisLabel.setAttribute('x', 4);
   axisLabel.setAttribute('y', 12);
@@ -481,7 +544,10 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-let serverTimeOffset = 0;
+// Часы в шапке считаются от времени СЕРВЕРА (Render), а не от локальных
+// часов устройства — так они не зависят от того, правильно ли настроено
+// время на компьютере/телефоне пользователя.
+let serverTimeOffset = 0; // разница между временем сервера и временем устройства, мс
 
 async function syncServerTime() {
   try {
@@ -490,9 +556,13 @@ async function syncServerTime() {
     const data = await res.json();
     const t1 = Date.now();
     const roundTrip = t1 - t0;
+    // Компенсируем время сетевого запроса — предполагаем, что половина
+    // задержки ушла на путь туда, половина — обратно
     const estimatedServerNow = data.now + roundTrip / 2;
     serverTimeOffset = estimatedServerNow - t1;
-  } catch (e) {}
+  } catch (e) {
+    // Если не удалось получить время сервера — остаёмся на локальных часах устройства
+  }
 }
 
 function tickClock() {
@@ -502,8 +572,11 @@ function tickClock() {
 
 syncServerTime().then(tickClock);
 setInterval(tickClock, 1000);
-setInterval(syncServerTime, 60000);
+setInterval(syncServerTime, 60000); // пересинхронизация раз в минуту, чтобы не накапливался дрейф
 
+// Браузер замедляет таймеры в неактивных вкладках — при возврате
+// фокуса на страницу сразу пересинхронизируем часы и данные,
+// чтобы не показывать устаревшее время.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     syncServerTime().then(tickClock);
