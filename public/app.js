@@ -147,6 +147,7 @@ function renderGrid(data) {
         <span class="badge ${m.status}">${statusLabel(m.status)}</span>
       </div>
       ${m.ssl ? sslBadgeHtml(m.ssl) : ''}
+      ${m.hasAutoRestart ? '<div class="ssl-mini" style="color:var(--up);">🔁 автоперезапуск настроен</div>' : ''}
       <div class="card__stats">
         <div>
           <div class="stat__value">${fmtMs(m.lastResponseMs)}</div>
@@ -196,17 +197,19 @@ async function loadDetail(m) {
 
   const days = Math.max(1, Math.round(currentHours / 24));
 
-  const [historyRes, statsRes, incidentsRes, heatmapRes] = await Promise.all([
+  const [historyRes, statsRes, incidentsRes, heatmapRes, restartsRes] = await Promise.all([
     fetch(`/api/monitors/${m.id}/history?hours=${currentHours}`),
     fetch(`/api/monitors/${m.id}/stats?hours=${currentHours}`),
     fetch(`/api/monitors/${m.id}/incidents?days=${days}`),
     fetch(`/api/monitors/${m.id}/heatmap?days=90`),
+    fetch(`/api/monitors/${m.id}/restarts`),
   ]);
 
   const history = await historyRes.json();
   const stats = await statsRes.json();
   const incidents = await incidentsRes.json();
   const heatmap = await heatmapRes.json();
+  const restarts = await restartsRes.json();
 
   renderStats(stats);
   drawChart(history);
@@ -215,6 +218,23 @@ async function loadDetail(m) {
   renderHeatmap(heatmap);
   renderSSL(m.ssl);
   renderTiming(history);
+  renderRestarts(restarts);
+}
+
+function renderRestarts(restarts) {
+  const section = document.getElementById('restartsSection');
+  const box = document.getElementById('detailRestarts');
+  if (!restarts.length) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  box.innerHTML = restarts.map((r) => `
+    <div class="incident">
+      <span>${fmtTime(r.ts)}</span>
+      <span class="err">${r.success ? '✓ запрос отправлен успешно' : '✗ ' + escapeHtml(r.error || 'ошибка')}</span>
+    </div>
+  `).join('');
 }
 
 function renderTiming(history) {
@@ -461,10 +481,7 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// Часы в шапке считаются от времени СЕРВЕРА (Render), а не от локальных
-// часов устройства — так они не зависят от того, правильно ли настроено
-// время на компьютере/телефоне пользователя.
-let serverTimeOffset = 0; // разница между временем сервера и временем устройства, мс
+let serverTimeOffset = 0;
 
 async function syncServerTime() {
   try {
@@ -475,9 +492,7 @@ async function syncServerTime() {
     const roundTrip = t1 - t0;
     const estimatedServerNow = data.now + roundTrip / 2;
     serverTimeOffset = estimatedServerNow - t1;
-  } catch (e) {
-    // Если не удалось получить время сервера — остаёмся на локальных часах устройства
-  }
+  } catch (e) {}
 }
 
 function tickClock() {
