@@ -31,10 +31,10 @@
     "name": "WindigoHelper",
     "type": "http",
     "url": "https://periproctal-emerald-agrobiologically.ngrok-free.dev/",
-    "hosting": "hidden_cloud",
     "intervalSec": 60,
     "timeoutMs": 8000,
-    "expectedStatus": 200
-    "hosting": "render",
+    "expectedStatus": 200,
+    "hosting": "hidden_cloud",
+    "recovery": { "provider": "none" }
   }
 ]
