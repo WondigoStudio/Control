@@ -1,26 +1,35 @@
-const fetch = require('node-fetch');
+const nodemailer = require('nodemailer');
 
-const NOTIFY_BOT_TOKEN = process.env.NOTIFY_BOT_TOKEN; // токен бота, который шлёт уведомления
-const NOTIFY_CHAT_ID = process.env.NOTIFY_CHAT_ID;     // твой chat_id
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT = process.env.SMTP_PORT || 465;
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const NOTIFY_EMAIL_TO = process.env.NOTIFY_EMAIL_TO;
 
-async function notify(text) {
-  if (!NOTIFY_BOT_TOKEN || !NOTIFY_CHAT_ID) {
-    console.log('[notify] (Telegram не настроен) ' + text);
+let transporter = null;
+if (SMTP_USER && SMTP_PASS) {
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: Number(SMTP_PORT) === 465,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
+}
+
+async function notify(subject, text) {
+  if (!transporter || !NOTIFY_EMAIL_TO) {
+    console.log('[notify] (Email не настроен) ' + subject + ' — ' + text);
     return;
   }
   try {
-    const url = `https://api.telegram.org/bot${NOTIFY_BOT_TOKEN}/sendMessage`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: NOTIFY_CHAT_ID,
-        text,
-        parse_mode: 'HTML',
-      }),
+    await transporter.sendMail({
+      from: `"Status Monitor" <${SMTP_USER}>`,
+      to: NOTIFY_EMAIL_TO,
+      subject,
+      text,
     });
   } catch (e) {
-    console.error('[notify] Ошибка отправки в Telegram:', e.message);
+    console.error('[notify] Ошибка отправки email:', e.message);
   }
 }
 
