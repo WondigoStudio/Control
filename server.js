@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const { runCheck } = require('./checker');
-const { getLastCheck, getHistory, getUptimePercent, getIncidents, getResponseStats } = require('./db');
+const { getLastCheck, getHistory, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,8 +15,6 @@ const monitors = JSON.parse(fs.readFileSync(path.join(__dirname, 'monitors.json'
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
-// --- API ---
-
 app.get('/api/monitors', (req, res) => {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
@@ -24,6 +22,7 @@ app.get('/api/monitors', (req, res) => {
 
   let data = monitors.map((m) => {
     const last = getLastCheck(m.id);
+    const ssl = getSSLStatus(m.id);
     return {
       id: m.id,
       name: m.name,
@@ -35,6 +34,7 @@ app.get('/api/monitors', (req, res) => {
       lastError: last ? last.error : null,
       uptime24h: getUptimePercent(m.id, now - day),
       uptime7d: getUptimePercent(m.id, now - week),
+      ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
     };
   });
 
@@ -66,6 +66,12 @@ app.get('/api/monitors/:id/stats', (req, res) => {
   res.json(stats);
 });
 
+app.get('/api/monitors/:id/heatmap', (req, res) => {
+  const days = parseInt(req.query.days || '90', 10);
+  const heatmap = getDailyUptime(req.params.id, days);
+  res.json(heatmap);
+});
+
 app.post('/api/monitors/:id/check-now', async (req, res) => {
   const monitor = monitors.find((m) => m.id === req.params.id);
   if (!monitor) return res.status(404).json({ error: 'Монитор не найден' });
@@ -73,8 +79,6 @@ app.post('/api/monitors/:id/check-now', async (req, res) => {
   res.json(result);
 });
 
-// --- Планировщик: проверяем каждый монитор по своему интервалу ---
-// Для простоты используем единый тик раз в минуту и внутри решаем, кому пора проверяться
 const lastRunMap = {};
 
 cron.schedule('* * * * *', () => {
@@ -93,7 +97,6 @@ cron.schedule('* * * * *', () => {
   });
 });
 
-// Запускаем первую проверку сразу при старте сервера
 monitors.forEach(async (m) => {
   lastRunMap[m.id] = Date.now();
   try {
