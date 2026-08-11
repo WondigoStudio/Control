@@ -38,11 +38,21 @@ CREATE TABLE IF NOT EXISTS ssl_status (
   checked_at INTEGER,
   error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS restart_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  monitor_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  success INTEGER,
+  error TEXT
+);
 `);
 
 try { db.exec("ALTER TABLE checks ADD COLUMN response_headers TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN content_ok INTEGER"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN timing_breakdown TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE monitor_state ADD COLUMN consecutive_fails INTEGER DEFAULT 0"); } catch (e) {}
+try { db.exec("ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DEFAULT 0"); } catch (e) {}
 
 function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing) {
   const stmt = db.prepare(`
@@ -210,12 +220,44 @@ function getResponseStats(monitorId, sinceTs) {
   };
 }
 
-function setState(monitorId, status) {
+function updateMonitorState(monitorId, ok) {
+  const prev = getState(monitorId);
+  const prevStatus = prev ? prev.last_status : 'unknown';
+  const newStatus = ok ? 'up' : 'down';
+  const consecutiveFails = ok ? 0 : (prev ? (prev.consecutive_fails || 0) : 0) + 1;
+  const restartAttempted = ok ? 0 : (prev ? (prev.restart_attempted || 0) : 0);
+  const statusChanged = prevStatus !== newStatus;
+
   db.prepare(`
-    INSERT INTO monitor_state (monitor_id, last_status, last_change_ts)
-    VALUES (?, ?, ?)
-    ON CONFLICT(monitor_id) DO UPDATE SET last_status = excluded.last_status, last_change_ts = excluded.last_change_ts
-  `).run(monitorId, status, Date.now());
+    INSERT INTO monitor_state (monitor_id, last_status, last_change_ts, consecutive_fails, restart_attempted)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(monitor_id) DO UPDATE SET
+      last_status = excluded.last_status,
+      last_change_ts = ?,
+      consecutive_fails = excluded.consecutive_fails,
+      restart_attempted = excluded.restart_attempted
+  `).run(
+    monitorId, newStatus, Date.now(), consecutiveFails, restartAttempted,
+    statusChanged ? Date.now() : (prev ? prev.last_change_ts : Date.now())
+  );
+
+  return { prevStatus, newStatus, statusChanged, consecutiveFails, restartAttempted };
+}
+
+function markRestartAttempted(monitorId) {
+  db.prepare(`UPDATE monitor_state SET restart_attempted = 1 WHERE monitor_id = ?`).run(monitorId);
+}
+
+function logRestartAttempt(monitorId, success, error) {
+  db.prepare(`
+    INSERT INTO restart_log (monitor_id, ts, success, error) VALUES (?, ?, ?, ?)
+  `).run(monitorId, Date.now(), success ? 1 : 0, error ?? null);
+}
+
+function getRestartLog(monitorId, limit) {
+  return db.prepare(`
+    SELECT * FROM restart_log WHERE monitor_id = ? ORDER BY ts DESC LIMIT ?
+  `).all(monitorId, limit || 10);
 }
 
 module.exports = {
@@ -225,7 +267,10 @@ module.exports = {
   getHistory,
   getUptimePercent,
   getState,
-  setState,
+  updateMonitorState,
+  markRestartAttempted,
+  logRestartAttempt,
+  getRestartLog,
   getIncidents,
   getResponseStats,
   setSSLStatus,
