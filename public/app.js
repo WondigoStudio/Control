@@ -13,12 +13,22 @@ const detailStats = document.getElementById('detailStats');
 const detailIncidents = document.getElementById('detailIncidents');
 const periodSwitch = document.getElementById('periodSwitch');
 
-document.getElementById('detailClose').onclick = () => (detail.hidden = true);
-detail.addEventListener('click', (e) => { if (e.target === detail) detail.hidden = true; });
-
 let sortByReliability = false;
 let currentMonitor = null;
 let currentHours = 24;
+let detailRefreshTimer = null;
+
+document.getElementById('detailClose').onclick = () => closeDetail();
+detail.addEventListener('click', (e) => { if (e.target === detail) closeDetail(); });
+
+function closeDetail() {
+  detail.hidden = true;
+  currentMonitor = null;
+  if (detailRefreshTimer) {
+    clearInterval(detailRefreshTimer);
+    detailRefreshTimer = null;
+  }
+}
 
 sortBtn.onclick = () => {
   sortByReliability = !sortByReliability;
@@ -67,6 +77,37 @@ async function loadMonitors() {
   const data = await res.json();
   renderGrid(data);
   updateSummary(data);
+  loadSummaryBar();
+}
+
+async function loadSummaryBar() {
+  const res = await fetch('/api/summary');
+  const data = await res.json();
+  renderSummaryBar(data);
+}
+
+function renderSummaryBar(data) {
+  const box = document.getElementById('summaryBar');
+  if (!data.length) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="summary-title">Сводка за 7 дней · от наименее надёжного</div>
+    <table class="summary-table">
+      <thead>
+        <tr><th>Объект</th><th>Аптайм 7д</th><th>Ср. отклик</th><th>Инцидентов</th></tr>
+      </thead>
+      <tbody>
+        ${data.map((m) => `
+          <tr>
+            <td>${escapeHtml(m.name)}</td>
+            <td class="${m.uptime7d !== null && m.uptime7d < 99 ? 'sum-warn' : 'sum-ok'}">${m.uptime7d ?? '—'}%</td>
+            <td>${fmtMs(m.avgResponseMs)}</td>
+            <td>${m.incidentsCount}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
 }
 
 function updateSummary(data) {
@@ -133,6 +174,18 @@ async function openDetail(m) {
   detail.hidden = false;
   detailTitle.textContent = m.name;
   await loadDetail(m);
+
+  if (detailRefreshTimer) clearInterval(detailRefreshTimer);
+  detailRefreshTimer = setInterval(async () => {
+    if (!currentMonitor || detail.hidden) return;
+    const res = await fetch('/api/monitors');
+    const list = await res.json();
+    const fresh = list.find((x) => x.id === currentMonitor.id);
+    if (fresh) {
+      currentMonitor = fresh;
+      await loadDetail(fresh);
+    }
+  }, 15000);
 }
 
 async function loadDetail(m) {
@@ -161,6 +214,49 @@ async function loadDetail(m) {
   renderIncidents(incidents);
   renderHeatmap(heatmap);
   renderSSL(m.ssl);
+  renderTiming(history);
+}
+
+function renderTiming(history) {
+  const box = document.getElementById('timingBox');
+  const withTiming = [...history].reverse().find((h) => h.timing_breakdown);
+  if (!withTiming) {
+    box.hidden = true;
+    return;
+  }
+  let t;
+  try {
+    t = JSON.parse(withTiming.timing_breakdown);
+  } catch (e) {
+    box.hidden = true;
+    return;
+  }
+
+  const dns = t.dns ?? 0;
+  const tcp = t.tcp !== null && t.tcp !== undefined ? Math.max(t.tcp - dns, 0) : 0;
+  const tls = t.tls !== null && t.tls !== undefined ? Math.max(t.tls - (t.tcp ?? dns), 0) : 0;
+  const serverStage = t.ttfb !== null && t.ttfb !== undefined ? Math.max(t.ttfb - (t.tls ?? t.tcp ?? dns), 0) : 0;
+  const download = t.total !== null && t.total !== undefined ? Math.max(t.total - (t.ttfb ?? 0), 0) : 0;
+  const total = t.total || (dns + tcp + tls + serverStage + download) || 1;
+
+  const segments = [
+    { label: 'DNS', ms: dns, cls: 'seg-dns' },
+    { label: 'TCP', ms: tcp, cls: 'seg-tcp' },
+    { label: 'TLS', ms: tls, cls: 'seg-tls' },
+    { label: 'Сервер', ms: serverStage, cls: 'seg-server' },
+    { label: 'Загрузка', ms: download, cls: 'seg-download' },
+  ];
+
+  box.hidden = false;
+  box.innerHTML = `
+    <div class="timing-title">Разбивка времени ответа (последний замер)</div>
+    <div class="timing-bar">
+      ${segments.map((s) => s.ms > 0 ? `<div class="timing-seg ${s.cls}" style="width:${Math.max((s.ms / total) * 100, 2)}%" title="${s.label}: ${s.ms} мс"></div>` : '').join('')}
+    </div>
+    <div class="timing-legend">
+      ${segments.map((s) => `<span class="timing-item"><i class="${s.cls}"></i>${s.label}: ${s.ms} мс</span>`).join('')}
+    </div>
+  `;
 }
 
 function renderSSL(ssl) {
@@ -335,7 +431,7 @@ function fmtChartTime(ts) {
 }
 
 function renderLog(history) {
-  const recent = history.slice(-30).reverse();
+  const recent = history.slice(-200).reverse();
   detailLog.innerHTML = recent.map((h) => {
     let headersLine = '';
     if (h.response_headers) {
