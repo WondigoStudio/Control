@@ -11,17 +11,19 @@
   {
     "id": "check-bot",
     "name": "CheckBot",
-    "type": "telegram_bot",
-    "botToken": "8325253736:AAFl045ZAY-v_UK9X98m62qboolhsMJRr9Q",
+    "type": "http",
+    "url": "https://check-info.onrender.com/",
     "intervalSec": 60,
-    "timeoutMs": 8000
+    "timeoutMs": 8000,
+    "expectedStatus": 200
   },
   {
     "id": "windigo-helper",
     "name": "WindigoHelper",
-    "type": "telegram_bot",
-    "botToken": "8519172573:AAF1GvDW95m4jogwXuef-sqHcXEA1Stn0zU",
+    "type": "http",
+    "url": "https://periproctal-emerald-agrobiologically.ngrok-free.dev/",
     "intervalSec": 60,
-    "timeoutMs": 8000  
+    "timeoutMs": 8000,
+    "expectedStatus": 200
   }
 ]
