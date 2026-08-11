@@ -52,9 +52,15 @@ async function runCheck(monitor) {
     // Уведомляем только если это реальное изменение состояния (не первая проверка при старте на "up")
     if (prevState) {
       if (newStatus === 'down') {
-        await notify(`🔴 <b>${monitor.name}</b> недоступен!\nОшибка: ${result.error || 'нет ответа'}`);
+        await notify(
+          `🔴 ${monitor.name} недоступен`,
+          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        );
       } else {
-        await notify(`🟢 <b>${monitor.name}</b> снова доступен (${result.responseMs} мс)`);
+        await notify(
+          `🟢 ${monitor.name} снова доступен`,
+          `Монитор "${monitor.name}" восстановился.\n\nВремя отклика: ${result.responseMs} мс\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        );
       }
     } else {
       // первая проверка — просто фиксируем состояние без уведомления
