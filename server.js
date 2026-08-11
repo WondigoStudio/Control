@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const { runCheck } = require('./checker');
-const { getLastCheck, getHistory, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime } = require('./db');
+const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -48,7 +48,16 @@ app.get('/api/monitors', (req, res) => {
 app.get('/api/monitors/:id/history', (req, res) => {
   const hours = parseInt(req.query.hours || '24', 10);
   const since = Date.now() - hours * 60 * 60 * 1000;
-  const history = getHistory(req.params.id, since);
+
+  let history;
+  if (hours <= 24) {
+    history = getHistory(req.params.id, since);
+  } else if (hours <= 168) {
+    history = getHistoryAggregated(req.params.id, since, 60);
+  } else {
+    history = getHistoryAggregated(req.params.id, since, 240);
+  }
+
   res.json(history);
 });
 
