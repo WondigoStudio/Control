@@ -40,7 +40,8 @@ app.get('/api/monitors', (req, res) => {
       uptime24h: getUptimePercent(m.id, now - day),
       uptime7d: getUptimePercent(m.id, now - week),
       ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
-      hasAutoRestart: !!m.deployHookUrl,
+      hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
+      recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
     };
   });
 
