@@ -46,8 +46,15 @@ CREATE TABLE IF NOT EXISTS restart_log (
   success INTEGER,
   error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS multi_location_results (
+  monitor_id TEXT PRIMARY KEY,
+  ts INTEGER NOT NULL,
+  results_json TEXT NOT NULL
+);
 `);
 
+// Миграция: добавляем новые колонки в уже существующие БД без пересоздания таблицы
 try { db.exec("ALTER TABLE checks ADD COLUMN response_headers TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN content_ok INTEGER"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN timing_breakdown TEXT"); } catch (e) {}
@@ -260,6 +267,20 @@ function getRestartLog(monitorId, limit) {
   `).all(monitorId, limit || 10);
 }
 
+function saveMultiLocationResult(monitorId, results) {
+  db.prepare(`
+    INSERT INTO multi_location_results (monitor_id, ts, results_json)
+    VALUES (?, ?, ?)
+    ON CONFLICT(monitor_id) DO UPDATE SET ts = excluded.ts, results_json = excluded.results_json
+  `).run(monitorId, Date.now(), JSON.stringify(results));
+}
+
+function getMultiLocationResult(monitorId) {
+  const row = db.prepare(`SELECT * FROM multi_location_results WHERE monitor_id = ?`).get(monitorId);
+  if (!row) return null;
+  return { ts: row.ts, results: JSON.parse(row.results_json) };
+}
+
 module.exports = {
   db,
   insertCheck,
@@ -278,4 +299,6 @@ module.exports = {
   getDailyUptime,
   getHistoryAggregated,
   getMonitorSummary,
+  saveMultiLocationResult,
+  getMultiLocationResult,
 };
