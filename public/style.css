@@ -366,3 +366,81 @@ html, body {
   padding: 0 0 6px 0;
   margin-top: -4px;
 }
+
+.summary-bar {
+  margin: 0 24px 8px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.summary-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
+}
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.summary-table th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.summary-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.summary-table tr:last-child td { border-bottom: none; }
+.summary-table .sum-ok { color: var(--up); }
+.summary-table .sum-warn { color: var(--down); }
+
+.timing-box {
+  margin-bottom: 16px;
+}
+.timing-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.timing-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--panel-border);
+}
+.timing-seg { height: 100%; }
+.seg-dns { background: #7f77dd; }
+.seg-tcp { background: #378add; }
+.seg-tls { background: #f2b544; }
+.seg-server { background: #35c48c; }
+.seg-download { background: #d85a30; }
+
+.timing-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.timing-item { display: flex; align-items: center; gap: 5px; }
+.timing-item i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.timing-item i.seg-dns { background: #7f77dd; }
+.timing-item i.seg-tcp { background: #378add; }
+.timing-item i.seg-tls { background: #f2b544; }
+.timing-item i.seg-server { background: #35c48c; }
+.timing-item i.seg-download { background: #d85a30; }
