@@ -66,6 +66,48 @@ function getState(monitorId) {
   return db.prepare(`SELECT * FROM monitor_state WHERE monitor_id = ?`).get(monitorId);
 }
 
+function getIncidents(monitorId, sinceTs) {
+  const rows = db.prepare(`
+    SELECT * FROM checks WHERE monitor_id = ? AND ts >= ? ORDER BY ts ASC
+  `).all(monitorId, sinceTs);
+
+  const incidents = [];
+  let current = null;
+
+  for (const row of rows) {
+    if (!row.ok) {
+      if (!current) {
+        current = { start: row.ts, end: row.ts, error: row.error, ongoing: true };
+      } else {
+        current.end = row.ts;
+        current.error = row.error || current.error;
+      }
+    } else if (current) {
+      current.ongoing = false;
+      incidents.push(current);
+      current = null;
+    }
+  }
+  if (current) incidents.push(current);
+
+  return incidents.reverse().map((inc) => ({
+    ...inc,
+    durationMs: inc.end - inc.start,
+  }));
+}
+
+function getResponseStats(monitorId, sinceTs) {
+  const row = db.prepare(`
+    SELECT AVG(response_ms) as avg, MIN(response_ms) as min, MAX(response_ms) as max
+    FROM checks WHERE monitor_id = ? AND ts >= ? AND ok = 1
+  `).get(monitorId, sinceTs);
+  return {
+    avg: row.avg !== null ? Math.round(row.avg) : null,
+    min: row.min ?? null,
+    max: row.max ?? null,
+  };
+}
+
 function setState(monitorId, status) {
   db.prepare(`
     INSERT INTO monitor_state (monitor_id, last_status, last_change_ts)
@@ -82,4 +124,6 @@ module.exports = {
   getUptimePercent,
   getState,
   setState,
+  getIncidents,
+  getResponseStats,
 };
