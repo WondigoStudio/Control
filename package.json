@@ -12,6 +12,7 @@
     "better-sqlite3": "^11.3.0",
     "node-cron": "^3.0.3",
     "node-fetch": "^2.7.0",
+    "nodemailer": "^6.9.14",
     "dotenv": "^16.4.5"
   }
 }
