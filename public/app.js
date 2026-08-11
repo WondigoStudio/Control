@@ -461,12 +461,43 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function tickClock() {
-  clockEl.textContent = new Date().toLocaleTimeString('ru-RU');
+// Часы в шапке считаются от времени СЕРВЕРА (Render), а не от локальных
+// часов устройства — так они не зависят от того, правильно ли настроено
+// время на компьютере/телефоне пользователя.
+let serverTimeOffset = 0; // разница между временем сервера и временем устройства, мс
+
+async function syncServerTime() {
+  try {
+    const t0 = Date.now();
+    const res = await fetch('/api/time');
+    const data = await res.json();
+    const t1 = Date.now();
+    const roundTrip = t1 - t0;
+    const estimatedServerNow = data.now + roundTrip / 2;
+    serverTimeOffset = estimatedServerNow - t1;
+  } catch (e) {
+    // Если не удалось получить время сервера — остаёмся на локальных часах устройства
+  }
 }
 
+function tickClock() {
+  const correctedNow = new Date(Date.now() + serverTimeOffset);
+  clockEl.textContent = correctedNow.toLocaleTimeString('ru-RU');
+}
+
+syncServerTime().then(tickClock);
 setInterval(tickClock, 1000);
-tickClock();
+setInterval(syncServerTime, 60000);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    syncServerTime().then(tickClock);
+    loadMonitors();
+    if (currentMonitor && !detail.hidden) {
+      loadDetail(currentMonitor);
+    }
+  }
+});
 
 loadMonitors();
 setInterval(loadMonitors, 15000);
