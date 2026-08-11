@@ -1,0 +1,28 @@
+[
+  {
+    "id": "my-site",
+    "name": "Мой сайт",
+    "type": "http",
+    "url": "https://example.com",
+    "intervalSec": 60,
+    "timeoutMs": 8000,
+    "expectedStatus": 200
+  },
+  {
+    "id": "my-telegram-bot",
+    "name": "Мой Telegram-бот",
+    "type": "telegram_bot",
+    "botToken": "PUT_BOT_TOKEN_HERE",
+    "intervalSec": 120,
+    "timeoutMs": 8000
+  },
+  {
+    "id": "custom-bot-health",
+    "name": "Бот с healthcheck-эндпоинтом",
+    "type": "http",
+    "url": "https://my-bot-service.example.com/health",
+    "intervalSec": 60,
+    "timeoutMs": 8000,
+    "expectedStatus": 200
+  }
+]
