@@ -18,6 +18,7 @@
       <span id="clock">--:--:--</span>
       <span class="divider">/</span>
       <span id="summaryText">загрузка…</span>
+      <button class="sort-btn" id="sortBtn">по надёжности</button>
     </div>
   </header>
 
@@ -30,9 +31,23 @@
       <button class="detail__close" id="detailClose">×</button>
       <h2 id="detailTitle">—</h2>
       <div class="detail__row" id="detailMeta"></div>
+
+      <div class="period-switch" id="periodSwitch">
+        <button data-hours="24" class="active">24ч</button>
+        <button data-hours="168">7д</button>
+        <button data-hours="720">30д</button>
+      </div>
+
+      <div class="detail__stats" id="detailStats"></div>
+
       <div class="detail__chart">
         <svg id="detailChart" viewBox="0 0 640 160" preserveAspectRatio="none"></svg>
       </div>
+
+      <h3 class="section-label">Инциденты</h3>
+      <div class="incidents" id="detailIncidents"></div>
+
+      <h3 class="section-label">Последние проверки</h3>
       <div class="detail__log" id="detailLog"></div>
     </div>
   </div>
