@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, setState, setSSLStatus, getSSLStatus } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus } = require('./db');
 const { notify } = require('./notifier');
 const { timingFetch } = require('./timingFetch');
 
@@ -103,6 +103,27 @@ async function checkTelegramBot(monitor) {
   }
 }
 
+async function attemptRestart(monitor) {
+  if (!monitor.deployHookUrl) return;
+  try {
+    const res = await fetch(monitor.deployHookUrl, { method: 'POST' });
+    const ok = res.ok;
+    logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`);
+    await notify(
+      ok ? `🔁 Автоперезапуск: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}`,
+      ok
+        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через deploy hook.\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        : `Попытка автоперезапуска "${monitor.name}" не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
+    );
+  } catch (e) {
+    logRestartAttempt(monitor.id, false, e.message);
+    await notify(
+      `⚠️ Не удалось перезапустить ${monitor.name}`,
+      `Попытка автоперезапуска "${monitor.name}" завершилась ошибкой: ${e.message}`
+    );
+  }
+}
+
 async function runCheck(monitor) {
   let result;
   if (monitor.type === 'telegram_bot') {
@@ -119,23 +140,31 @@ async function runCheck(monitor) {
   }
 
   const prevState = getState(monitor.id);
-  const newStatus = result.ok ? 'up' : 'down';
+  const { newStatus, statusChanged, consecutiveFails, restartAttempted } = updateMonitorState(monitor.id, result.ok);
 
-  if (!prevState || prevState.last_status !== newStatus) {
-    setState(monitor.id, newStatus);
-    if (prevState) {
-      if (newStatus === 'down') {
-        await notify(
-          `🔴 ${monitor.name} недоступен`,
-          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
-        );
-      } else {
-        await notify(
-          `🟢 ${monitor.name} снова доступен`,
-          `Монитор "${monitor.name}" восстановился.\n\nВремя отклика: ${result.responseMs} мс\nВремя: ${new Date().toLocaleString('ru-RU')}`
-        );
-      }
+  if (statusChanged && prevState) {
+    if (newStatus === 'down') {
+      await notify(
+        `🔴 ${monitor.name} недоступен`,
+        `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
+      );
+    } else {
+      await notify(
+        `🟢 ${monitor.name} снова доступен`,
+        `Монитор "${monitor.name}" восстановился.\n\nВремя отклика: ${result.responseMs} мс\nВремя: ${new Date().toLocaleString('ru-RU')}`
+      );
     }
+  }
+
+  const restartThreshold = monitor.restartAfterFails || 3;
+  if (
+    newStatus === 'down' &&
+    monitor.deployHookUrl &&
+    consecutiveFails === restartThreshold &&
+    !restartAttempted
+  ) {
+    markRestartAttempted(monitor.id);
+    attemptRestart(monitor).catch(() => {});
   }
 
   return result;
