@@ -22,8 +22,9 @@
     </div>
   </header>
 
+  <div class="summary-bar" id="summaryBar" hidden></div>
+
   <main class="grid" id="grid">
-    <!-- карточки мониторов рендерятся сюда -->
   </main>
 
   <div class="detail" id="detail" hidden>
@@ -40,9 +41,16 @@
 
       <div class="detail__stats" id="detailStats"></div>
 
+      <div id="sslBox" class="ssl-box" hidden></div>
+
+      <div id="timingBox" class="timing-box" hidden></div>
+
       <div class="detail__chart">
         <svg id="detailChart" viewBox="0 0 640 160" preserveAspectRatio="none"></svg>
       </div>
+
+      <h3 class="section-label">Аптайм за 90 дней</h3>
+      <div class="heatmap" id="heatmap"></div>
 
       <h3 class="section-label">Инциденты</h3>
       <div class="incidents" id="detailIncidents"></div>
