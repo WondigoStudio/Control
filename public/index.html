@@ -25,6 +25,7 @@
   <div class="summary-bar" id="summaryBar" hidden></div>
 
   <main class="grid" id="grid">
+    <!-- карточки мониторов рендерятся сюда -->
   </main>
 
   <div class="detail" id="detail" hidden>
@@ -54,6 +55,11 @@
 
       <h3 class="section-label">Инциденты</h3>
       <div class="incidents" id="detailIncidents"></div>
+
+      <div id="restartsSection" hidden>
+        <h3 class="section-label">Попытки автоперезапуска</h3>
+        <div class="incidents" id="detailRestarts"></div>
+      </div>
 
       <h3 class="section-label">Последние проверки</h3>
       <div class="detail__log" id="detailLog"></div>
