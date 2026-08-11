@@ -42,16 +42,18 @@ CREATE TABLE IF NOT EXISTS ssl_status (
 
 try { db.exec("ALTER TABLE checks ADD COLUMN response_headers TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN content_ok INTEGER"); } catch (e) {}
+try { db.exec("ALTER TABLE checks ADD COLUMN timing_breakdown TEXT"); } catch (e) {}
 
-function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk) {
+function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing) {
   const stmt = db.prepare(`
-    INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok, timing_breakdown)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     monitorId, Date.now(), ok ? 1 : 0, responseMs ?? null, statusCode ?? null, error ?? null,
     responseHeaders ? JSON.stringify(responseHeaders) : null,
-    contentOk === undefined || contentOk === null ? null : (contentOk ? 1 : 0)
+    contentOk === undefined || contentOk === null ? null : (contentOk ? 1 : 0),
+    timing ? JSON.stringify(timing) : null
   );
 }
 
@@ -89,6 +91,22 @@ function getDailyUptime(monitorId, days) {
     day: r.day,
     uptime: r.total ? Math.round((r.up / r.total) * 10000) / 100 : null,
   }));
+}
+
+function getMonitorSummary(monitorId, sinceTs) {
+  const uptimeRow = db.prepare(`
+    SELECT COUNT(*) as total, SUM(ok) as up FROM checks WHERE monitor_id = ? AND ts >= ?
+  `).get(monitorId, sinceTs);
+  const respRow = db.prepare(`
+    SELECT AVG(response_ms) as avg FROM checks WHERE monitor_id = ? AND ts >= ? AND ok = 1
+  `).get(monitorId, sinceTs);
+  const incidentsCount = getIncidents(monitorId, sinceTs).length;
+
+  return {
+    uptime: uptimeRow && uptimeRow.total ? Math.round((uptimeRow.up / uptimeRow.total) * 10000) / 100 : null,
+    avgResponseMs: respRow && respRow.avg !== null ? Math.round(respRow.avg) : null,
+    incidentsCount,
+  };
 }
 
 function getLastCheck(monitorId) {
@@ -214,4 +232,5 @@ module.exports = {
   getSSLStatus,
   getDailyUptime,
   getHistoryAggregated,
+  getMonitorSummary,
 };
