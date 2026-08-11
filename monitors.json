@@ -6,7 +6,9 @@
     "url": "https://quizwin.free.nf/",
     "intervalSec": 60,
     "timeoutMs": 8000,
-    "expectedStatus": 200
+    "expectedStatus": 200,
+    "hosting": "infinityfree",
+    "recovery": { "provider": "none" }
   },
   {
     "id": "check-bot",
@@ -16,6 +18,7 @@
     "intervalSec": 60,
     "timeoutMs": 8000,
     "expectedStatus": 200,
+    "hosting": "render",
     "recovery": {
       "provider": "render",
       "enabled": true,
@@ -28,8 +31,10 @@
     "name": "WindigoHelper",
     "type": "http",
     "url": "https://periproctal-emerald-agrobiologically.ngrok-free.dev/",
+    "hosting": "hidden_cloud",
     "intervalSec": 60,
     "timeoutMs": 8000,
     "expectedStatus": 200
+    "hosting": "render",
   }
 ]
