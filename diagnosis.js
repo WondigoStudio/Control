@@ -17,8 +17,24 @@ const CATEGORY = {
   UNKNOWN: 'UNKNOWN',
 };
 
-function diagnose({ error, statusCode, responseMs, timeoutMs }) {
+// Название хостинга для персонализации рекомендаций в suggestion.
+// Поддерживаемые значения (задаются в monitors.json как "hosting"):
+// "render" | "infinityfree" | "vps" | "hidden_cloud" | "other" (по умолчанию)
+const HOSTING_LABELS = {
+  render: 'Render',
+  infinityfree: 'InfinityFree',
+  vps: 'VPS',
+  hidden_cloud: 'Hidden Cloud',
+  other: 'хостинге',
+};
+
+function hostingName(hosting) {
+  return HOSTING_LABELS[hosting] || HOSTING_LABELS.other;
+}
+
+function diagnose({ error, statusCode, responseMs, timeoutMs, hosting }) {
   const err = (error || '').toLowerCase();
+  const hostLabel = hostingName(hosting);
 
   // Контент не совпал с ожидаемым (expectedContent) — сайт технически
   // отвечает (обычно 200), но нужного текста на странице нет.
@@ -48,7 +64,13 @@ function diagnose({ error, statusCode, responseMs, timeoutMs }) {
       category: CATEGORY.CONNECTION_REFUSED,
       label: 'Сервер отказал в подключении',
       explanation: 'Порт закрыт или процесс не запущен на сервере — соединение отклонено сразу.',
-      suggestion: 'Проверь, запущен ли сам процесс (бот/сайт) на хостинге, не упал ли он.',
+      suggestion: hosting === 'render'
+        ? `Проверь логи сервиса в панели Render — процесс, скорее всего, упал при старте или крашнулся. Если настроен автоперезапуск через Deploy Hook — он должен сработать сам.`
+        : hosting === 'infinityfree'
+        ? `На InfinityFree это часто означает, что сайт временно отключён за превышение лимитов бесплатного тарифа. Проверь панель управления на предмет предупреждений.`
+        : hosting === 'hidden_cloud'
+        ? `Проверь, не истёк ли бесплатный тариф на Hidden Cloud — сервис требует ручного еженедельного продления, иначе автоматически приостанавливается.`
+        : `Проверь, запущен ли сам процесс (бот/сайт) на ${hostLabel}, не упал ли он.`,
     };
   }
 
@@ -71,7 +93,9 @@ function diagnose({ error, statusCode, responseMs, timeoutMs }) {
       explanation: nearLimit
         ? 'Запрос завис и не уложился в лимит времени — сервер перегружен, завис в бесконечном цикле, или ушёл в спящий режим (актуально для бесплатных хостингов).'
         : 'Не удалось установить соединение за отведённое время.',
-      suggestion: 'Если хостинг бесплатный и "засыпает" при простое — рассмотри внешний пинг (cron-job.org) или платный тариф без сна.',
+      suggestion: (hosting === 'render' || hosting === 'infinityfree')
+        ? `${hostLabel} на бесплатном тарифе "усыпляет" сервис при простое. Настрой внешний пинг (например, через cron-job.org) каждые 5 минут, чтобы сервис не засыпал.`
+        : 'Если хостинг бесплатный и "засыпает" при простое — рассмотри внешний пинг (cron-job.org) или платный тариф без сна.',
     };
   }
 
@@ -116,7 +140,9 @@ function diagnose({ error, statusCode, responseMs, timeoutMs }) {
         category: CATEGORY.HOSTING_PROBLEM,
         label: 'Сервер за прокси недоступен',
         explanation: `Код ${statusCode} обычно означает, что сам процесс (бот/приложение) упал или не запущен, а прокси/балансировщик хостинга работает, но не может до него достучаться.`,
-        suggestion: 'Проверь логи хостинга — скорее всего, процесс приложения крашнулся или ещё не поднялся после деплоя.',
+        suggestion: hosting === 'render'
+          ? 'Проверь логи в панели Render — процесс, скорее всего, крашнулся или ещё не поднялся после деплоя. Если настроен автоперезапуск — он должен сработать сам.'
+          : `Проверь логи ${hostLabel} — скорее всего, процесс приложения крашнулся или ещё не поднялся после деплоя.`,
       };
     }
     if (statusCode === 402) {
@@ -124,7 +150,11 @@ function diagnose({ error, statusCode, responseMs, timeoutMs }) {
         category: CATEGORY.SUSPENDED,
         label: 'Хостинг приостановлен',
         explanation: 'Код 402 (Payment Required) часто означает, что сервис заблокирован из-за неоплаты или истёкшего бесплатного тарифа.',
-        suggestion: 'Проверь баланс/статус подписки на хостинге.',
+        suggestion: hosting === 'hidden_cloud'
+          ? 'На Hidden Cloud бесплатный тариф требует ручного продления раз в неделю через Dashboard → Renew → Create Invoice. Автоматическое восстановление недоступно — API для этого у них нет.'
+          : hosting === 'infinityfree'
+          ? 'Проверь панель InfinityFree — бесплатные аккаунты могут блокироваться за превышение лимитов, требуется ручное вмешательство.'
+          : `Проверь баланс/статус подписки на ${hostLabel}.`,
       };
     }
     if (statusCode >= 500) {
