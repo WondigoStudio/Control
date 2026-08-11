@@ -80,7 +80,9 @@ app.get('/api/monitors/:id/heatmap', (req, res) => {
   const heatmap = getDailyUptime(req.params.id, days);
   res.json(heatmap);
 });
-
+app.get('/api/time', (req, res) => {
+  res.json({ now: Date.now() });
+});
 app.get('/api/summary', (req, res) => {
   const week = 7 * 24 * 60 * 60 * 1000;
   const since = Date.now() - week;
