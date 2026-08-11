@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const { runCheck } = require('./checker');
-const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime } = require('./db');
+const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -79,6 +79,20 @@ app.get('/api/monitors/:id/heatmap', (req, res) => {
   const days = parseInt(req.query.days || '90', 10);
   const heatmap = getDailyUptime(req.params.id, days);
   res.json(heatmap);
+});
+
+app.get('/api/summary', (req, res) => {
+  const week = 7 * 24 * 60 * 60 * 1000;
+  const since = Date.now() - week;
+
+  const data = monitors.map((m) => {
+    const s = getMonitorSummary(m.id, since);
+    return { id: m.id, name: m.name, uptime7d: s.uptime, avgResponseMs: s.avgResponseMs, incidentsCount: s.incidentsCount };
+  });
+
+  data.sort((a, b) => (a.uptime7d ?? 101) - (b.uptime7d ?? 101));
+
+  res.json(data);
 });
 
 app.post('/api/monitors/:id/check-now', async (req, res) => {
