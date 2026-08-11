@@ -122,6 +122,22 @@ function updateSummary(data) {
   }
 }
 
+function categoryIcon(category) {
+  const icons = {
+    DNS_PROBLEM: '🌐',
+    SSL_PROBLEM: '🔒',
+    CONNECTION_REFUSED: '🚫',
+    TIMEOUT: '⏱️',
+    HTTP_ERROR: '⚠️',
+    CONTENT_MISMATCH: '📄',
+    HOSTING_PROBLEM: '🖥️',
+    SUSPENDED: '💳',
+    NETWORK_PROBLEM: '📡',
+    UNKNOWN: '❓',
+  };
+  return icons[category] || '⚠️';
+}
+
 function sslBadgeHtml(ssl) {
   if (ssl.error && !ssl.valid) return '';
   if (ssl.daysLeft === null || ssl.daysLeft === undefined) return '';
@@ -164,7 +180,7 @@ function renderGrid(data) {
       </div>
       ${m.status === 'down' && m.lastErrorDiagnosis ? `
         <div class="card__error">
-          <div class="diag-label">⚠️ ${escapeHtml(m.lastErrorDiagnosis.label)}</div>
+          <div class="diag-label">${categoryIcon(m.lastErrorDiagnosis.category)} ${escapeHtml(m.lastErrorDiagnosis.label)}</div>
           <div class="diag-explain">${escapeHtml(m.lastErrorDiagnosis.explanation)}</div>
         </div>
       ` : (m.status === 'down' && m.lastError ? `<div class="card__error">${escapeHtml(m.lastError)}</div>` : '')}
@@ -393,7 +409,7 @@ function renderIncidents(incidents) {
     <div class="incident-block ${inc.ongoing ? 'ongoing' : ''}">
       <div class="incident">
         <span>${fmtTime(inc.start)}</span>
-        <span class="err">${inc.diagnosis ? escapeHtml(inc.diagnosis.label) : escapeHtml(inc.error || 'ошибка')}</span>
+        <span class="err">${inc.diagnosis ? categoryIcon(inc.diagnosis.category) + ' ' + escapeHtml(inc.diagnosis.label) : escapeHtml(inc.error || 'ошибка')}</span>
         <span class="dur">${fmtDuration(inc.durationMs)}</span>
       </div>
       ${inc.diagnosis ? `
