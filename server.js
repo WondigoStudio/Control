@@ -36,7 +36,8 @@ app.get('/api/monitors', (req, res) => {
       lastResponseMs: last ? last.response_ms : null,
       lastCheckedAt: last ? last.ts : null,
       lastError: last ? last.error : null,
-      lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs }) : null,
+      lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
+      hosting: m.hosting || 'other',
       uptime24h: getUptimePercent(m.id, now - day),
       uptime7d: getUptimePercent(m.id, now - week),
       ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
@@ -102,7 +103,7 @@ app.get('/api/monitors/:id/incidents', (req, res) => {
   const monitor = monitors.find((m) => m.id === req.params.id);
   const incidents = getIncidents(req.params.id, since).map((inc) => ({
     ...inc,
-    diagnosis: diagnose({ error: inc.error, timeoutMs: monitor ? monitor.timeoutMs : null }),
+    diagnosis: diagnose({ error: inc.error, timeoutMs: monitor ? monitor.timeoutMs : null, hosting: monitor ? monitor.hosting : null }),
   }));
   res.json(incidents);
 });
