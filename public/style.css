@@ -169,7 +169,6 @@ html, body {
   white-space: nowrap;
 }
 
-/* Detail panel */
 .detail {
   position: fixed;
   inset: 0;
@@ -323,4 +322,47 @@ html, body {
 @media (max-width: 480px) {
   .topbar { padding: 14px 16px; }
   .grid { padding: 16px; gap: 12px; }
+}
+
+.ssl-mini {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  margin: 8px 0 0;
+}
+
+.ssl-box {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  border: 1px solid var(--panel-border);
+}
+.ssl-box.ok { color: var(--up); border-color: rgba(53,196,140,0.3); background: rgba(53,196,140,0.06); }
+.ssl-box.warn { color: var(--accent); border-color: rgba(242,181,68,0.35); background: rgba(242,181,68,0.08); }
+.ssl-box.danger { color: var(--down); border-color: rgba(227,91,82,0.35); background: rgba(227,91,82,0.08); }
+
+.heatmap {
+  display: grid;
+  grid-template-columns: repeat(30, 1fr);
+  gap: 3px;
+  margin-bottom: 20px;
+}
+.hm-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--panel-border);
+}
+.hm-cell.hm-100 { background: var(--up); }
+.hm-cell.hm-95 { background: #7fcf9e; }
+.hm-cell.hm-80 { background: var(--accent); }
+.hm-cell.hm-low { background: var(--down); }
+.hm-cell.hm-empty { background: var(--panel-border); opacity: 0.4; }
+
+.log-headers {
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 0 0 6px 0;
+  margin-top: -4px;
 }
