@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Статус · Пульт наблюдения</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="scanline"></div>
+
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="topbar__dot" id="globalDot"></span>
+      <span class="topbar__title">ПУЛЬТ&nbsp;НАБЛЮДЕНИЯ</span>
+    </div>
+    <div class="topbar__meta">
+      <span id="clock">--:--:--</span>
+      <span class="divider">/</span>
+      <span id="summaryText">загрузка…</span>
+    </div>
+  </header>
+
+  <main class="grid" id="grid">
+    <!-- карточки мониторов рендерятся сюда -->
+  </main>
+
+  <div class="detail" id="detail" hidden>
+    <div class="detail__panel">
+      <button class="detail__close" id="detailClose">×</button>
+      <h2 id="detailTitle">—</h2>
+      <div class="detail__row" id="detailMeta"></div>
+      <div class="detail__chart">
+        <svg id="detailChart" viewBox="0 0 640 160" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="detail__log" id="detailLog"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
