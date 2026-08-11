@@ -122,6 +122,16 @@ function updateSummary(data) {
   }
 }
 
+function hostingLabel(hosting) {
+  const labels = {
+    render: 'Render',
+    infinityfree: 'InfinityFree',
+    vps: 'VPS',
+    hidden_cloud: 'Hidden Cloud',
+  };
+  return labels[hosting] || null;
+}
+
 function categoryIcon(category) {
   const icons = {
     DNS_PROBLEM: '🌐',
@@ -158,7 +168,7 @@ function renderGrid(data) {
       <div class="card__top">
         <div>
           <div class="card__name">${escapeHtml(m.name)}</div>
-          <div class="card__target">${escapeHtml(m.target)}</div>
+          <div class="card__target">${escapeHtml(m.target)}${hostingLabel(m.hosting) ? ` · <span class="host-badge">${escapeHtml(hostingLabel(m.hosting))}</span>` : ''}</div>
         </div>
         <span class="badge ${m.status}">${statusLabel(m.status)}</span>
       </div>
