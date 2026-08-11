@@ -425,6 +425,11 @@ html, body {
 .loc-cell.loc-ok .loc-status { color: var(--up); }
 .loc-cell.loc-down .loc-status { color: var(--down); }
 
+.host-badge {
+  color: var(--accent);
+  opacity: 0.8;
+}
+
 .summary-bar {
   margin: 0 24px 8px;
   background: var(--panel);
