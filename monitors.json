@@ -15,7 +15,9 @@
     "url": "https://check-info.onrender.com/",
     "intervalSec": 60,
     "timeoutMs": 8000,
-    "expectedStatus": 200
+    "expectedStatus": 200,
+    "deployHookUrl": "https://api.render.com/deploy/srv-d88ipujeo5us73fvds40?key=T72e_pajhiA",
+    "restartAfterFails": 5
   },
   {
     "id": "windigo-helper",
