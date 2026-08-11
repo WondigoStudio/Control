@@ -40,7 +40,6 @@ CREATE TABLE IF NOT EXISTS ssl_status (
 );
 `);
 
-// Миграция: добавляем новые колонки в уже существующие БД без пересоздания таблицы
 try { db.exec("ALTER TABLE checks ADD COLUMN response_headers TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN content_ok INTEGER"); } catch (e) {}
 
@@ -102,6 +101,38 @@ function getHistory(monitorId, sinceTs) {
   return db.prepare(`
     SELECT * FROM checks WHERE monitor_id = ? AND ts >= ? ORDER BY ts ASC
   `).all(monitorId, sinceTs);
+}
+
+function getHistoryAggregated(monitorId, sinceTs, bucketMinutes) {
+  const bucketMs = bucketMinutes * 60 * 1000;
+  const rows = db.prepare(`
+    SELECT * FROM checks WHERE monitor_id = ? AND ts >= ? ORDER BY ts ASC
+  `).all(monitorId, sinceTs);
+
+  const buckets = new Map();
+  for (const row of rows) {
+    const bucketKey = Math.floor(row.ts / bucketMs) * bucketMs;
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, { ts: bucketKey, sumMs: 0, count: 0, total: 0, okCount: 0, lastError: null });
+    }
+    const b = buckets.get(bucketKey);
+    if (row.response_ms !== null) {
+      b.sumMs += row.response_ms;
+      b.count += 1;
+    }
+    b.total += 1;
+    if (row.ok) b.okCount += 1;
+    if (!row.ok) b.lastError = row.error;
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) => a.ts - b.ts)
+    .map((b) => ({
+      ts: b.ts,
+      response_ms: b.count ? Math.round(b.sumMs / b.count) : null,
+      ok: b.okCount === b.total ? 1 : 0,
+      error: b.lastError,
+    }));
 }
 
 function getUptimePercent(monitorId, sinceTs) {
@@ -182,4 +213,5 @@ module.exports = {
   setSSLStatus,
   getSSLStatus,
   getDailyUptime,
+  getHistoryAggregated,
 };
