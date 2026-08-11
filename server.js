@@ -5,7 +5,9 @@ const path = require('path');
 const fs = require('fs');
 
 const { runCheck } = require('./checker');
-const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary, getRestartLog } = require('./db');
+const { diagnose } = require('./diagnosis');
+const { checkMultiLocation } = require('./multiLocationCheck');
+const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary, getRestartLog, saveMultiLocationResult, getMultiLocationResult } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,12 +17,14 @@ const monitors = JSON.parse(fs.readFileSync(path.join(__dirname, 'monitors.json'
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
+// --- API ---
+
 app.get('/api/monitors', (req, res) => {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const week = 7 * day;
 
-  let data = monitors.map((m) => {
+  let data = monitors.filter((m) => m.type !== 'reminder').map((m) => {
     const last = getLastCheck(m.id);
     const ssl = getSSLStatus(m.id);
     return {
@@ -32,6 +36,7 @@ app.get('/api/monitors', (req, res) => {
       lastResponseMs: last ? last.response_ms : null,
       lastCheckedAt: last ? last.ts : null,
       lastError: last ? last.error : null,
+      lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs }) : null,
       uptime24h: getUptimePercent(m.id, now - day),
       uptime7d: getUptimePercent(m.id, now - week),
       ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
@@ -51,16 +56,39 @@ app.get('/api/monitors/:id/restarts', (req, res) => {
   res.json(log);
 });
 
+app.get('/api/monitors/:id/locations', (req, res) => {
+  const cached = getMultiLocationResult(req.params.id);
+  res.json(cached);
+});
+
+app.post('/api/monitors/:id/locations', async (req, res) => {
+  const monitor = monitors.find((m) => m.id === req.params.id);
+  if (!monitor) return res.status(404).json({ error: 'Монитор не найден' });
+  if (monitor.type !== 'http' || !monitor.url) {
+    return res.status(400).json({ error: 'Проверка из разных локаций доступна только для http-мониторов' });
+  }
+  try {
+    const results = await checkMultiLocation(monitor.url);
+    saveMultiLocationResult(monitor.id, results);
+    res.json({ ts: Date.now(), results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/monitors/:id/history', (req, res) => {
   const hours = parseInt(req.query.hours || '24', 10);
   const since = Date.now() - hours * 60 * 60 * 1000;
 
   let history;
   if (hours <= 24) {
+    // Короткий период — показываем все точки как есть
     history = getHistory(req.params.id, since);
   } else if (hours <= 168) {
+    // 7 дней — усредняем по часам, иначе точек слишком много
     history = getHistoryAggregated(req.params.id, since, 60);
   } else {
+    // 30 дней — усредняем по 4-часовым интервалам
     history = getHistoryAggregated(req.params.id, since, 240);
   }
 
@@ -70,7 +98,11 @@ app.get('/api/monitors/:id/history', (req, res) => {
 app.get('/api/monitors/:id/incidents', (req, res) => {
   const days = parseInt(req.query.days || '7', 10);
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
-  const incidents = getIncidents(req.params.id, since);
+  const monitor = monitors.find((m) => m.id === req.params.id);
+  const incidents = getIncidents(req.params.id, since).map((inc) => ({
+    ...inc,
+    diagnosis: diagnose({ error: inc.error, timeoutMs: monitor ? monitor.timeoutMs : null }),
+  }));
   res.json(incidents);
 });
 
@@ -95,7 +127,7 @@ app.get('/api/summary', (req, res) => {
   const week = 7 * 24 * 60 * 60 * 1000;
   const since = Date.now() - week;
 
-  const data = monitors.map((m) => {
+  const data = monitors.filter((m) => m.type !== 'reminder').map((m) => {
     const s = getMonitorSummary(m.id, since);
     return { id: m.id, name: m.name, uptime7d: s.uptime, avgResponseMs: s.avgResponseMs, incidentsCount: s.incidentsCount };
   });
@@ -112,11 +144,13 @@ app.post('/api/monitors/:id/check-now', async (req, res) => {
   res.json(result);
 });
 
+// --- Планировщик: проверяем каждый монитор по своему интервалу ---
+// Для простоты используем единый тик раз в минуту и внутри решаем, кому пора проверяться
 const lastRunMap = {};
 
 cron.schedule('* * * * *', () => {
   const now = Date.now();
-  monitors.forEach(async (m) => {
+  monitors.filter((m) => m.type !== 'reminder').forEach(async (m) => {
     const interval = (m.intervalSec || 60) * 1000;
     const last = lastRunMap[m.id] || 0;
     if (now - last >= interval) {
@@ -130,7 +164,8 @@ cron.schedule('* * * * *', () => {
   });
 });
 
-monitors.forEach(async (m) => {
+// Запускаем первую проверку сразу при старте сервера
+monitors.filter((m) => m.type !== 'reminder').forEach(async (m) => {
   lastRunMap[m.id] = Date.now();
   try {
     await runCheck(m);
