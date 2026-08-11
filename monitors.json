@@ -17,12 +17,12 @@
     "timeoutMs": 8000
   },
   {
-    "id": "custom-bot-health",
-    "name": "Бот с healthcheck-эндпоинтом",
-    "type": "http",
+    "id": "windigo-helper",
+    "name": "WindigoHelper",
+    "type": "telegram_bot",
     "url": "https://my-bot-service.example.com/health",
+    "botToken": "8519172573:AAF1GvDW95m4jogwXuef-sqHcXEA1Stn0zU",
     "intervalSec": 60,
-    "timeoutMs": 8000,
-    "expectedStatus": 200
+    "timeoutMs": 8000  
   }
 ]
