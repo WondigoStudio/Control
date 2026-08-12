@@ -556,3 +556,74 @@ html, body {
 #detailRestarts::-webkit-scrollbar-thumb:hover {
   background: var(--accent);
 }
+
+/* Форма добавления/редактирования монитора */
+.form-row {
+  margin-bottom: 14px;
+}
+.form-row label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.form-row input,
+.form-row select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 9px 12px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.form-row input:focus,
+.form-row select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+.btn-primary {
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  color: #1a1500;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-danger {
+  background: none;
+  border: 1px solid var(--down);
+  border-radius: 6px;
+  padding: 10px 20px;
+  color: var(--down);
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+.form-error {
+  color: var(--down);
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 12px;
+  min-height: 16px;
+}
+
+.edit-monitor-btn {
+  position: absolute;
+  top: 16px;
+  right: 56px;
+}
