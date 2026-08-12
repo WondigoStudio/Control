@@ -64,6 +64,8 @@ async function openMonitorForm(monitor) {
   document.getElementById('f_maxAttempts').value = recovery && recovery.maxAttempts ? recovery.maxAttempts : 2;
   document.getElementById('f_maxPerHour').value = recovery && recovery.maxPerHour ? recovery.maxPerHour : 5;
 
+  document.getElementById('f_backupUrl').value = monitor && monitor.failover && monitor.failover.backupUrl ? monitor.failover.backupUrl : '';
+
   updateFormFieldsVisibility();
   monitorFormModal.hidden = false;
 }
@@ -105,6 +107,11 @@ function buildMonitorPayload() {
     };
   } else {
     payload.recovery = { provider: 'none' };
+  }
+
+  const backupUrl = document.getElementById('f_backupUrl').value.trim();
+  if (backupUrl) {
+    payload.failover = { backupUrl };
   }
 
   return payload;
@@ -155,11 +162,41 @@ deleteMonitorBtn.addEventListener('click', async () => {
   }
 });
 
+document.getElementById('maintenanceBtn').addEventListener('click', async () => {
+  if (!currentMonitor) return;
+
+  const isOn = currentMonitor.maintenance && currentMonitor.maintenance.enabled;
+  if (isOn) {
+    await fetch(`/api/monitors/${currentMonitor.id}/maintenance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    loadDetail(currentMonitor);
+    loadMonitors();
+    return;
+  }
+
+  const minutesStr = prompt('На сколько минут включить режим обслуживания?\n(оставь пустым — до ручного выключения)', '30');
+  if (minutesStr === null) return; // отмена
+
+  const minutes = minutesStr.trim() ? parseInt(minutesStr, 10) : null;
+  await fetch(`/api/monitors/${currentMonitor.id}/maintenance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: true, minutes }),
+  });
+  loadDetail(currentMonitor);
+  loadMonitors();
+});
+
 document.getElementById('editMonitorBtn').addEventListener('click', async () => {
   if (!currentMonitor) return;
+  const monitorId = currentMonitor.id;
+  closeDetail();
   const res = await fetch('/api/config/monitors');
   const configs = await res.json();
-  const fullConfig = configs.find((c) => c.id === currentMonitor.id);
+  const fullConfig = configs.find((c) => c.id === monitorId);
   if (fullConfig) openMonitorForm(fullConfig);
 });
 
@@ -333,6 +370,7 @@ function renderGrid(data) {
       </div>
       ${m.ssl ? sslBadgeHtml(m.ssl) : ''}
       ${m.hasAutoRestart ? '<div class="ssl-mini" style="color:var(--up);">🔁 автоперезапуск настроен</div>' : ''}
+      ${m.maintenance && m.maintenance.enabled ? '<div class="ssl-mini" style="color:var(--accent);">🔧 на обслуживании</div>' : ''}
       <div class="card__stats">
         <div>
           <div class="stat__value">${fmtMs(m.lastResponseMs)}</div>
@@ -385,6 +423,11 @@ async function loadDetail(m) {
     <span>статус: ${statusLabel(m.status)}</span>
     <span>последняя проверка: ${fmtTime(m.lastCheckedAt)}</span>
   `;
+
+  const maintenanceBtn = document.getElementById('maintenanceBtn');
+  const isInMaintenance = m.maintenance && m.maintenance.enabled;
+  maintenanceBtn.textContent = isInMaintenance ? '🔧 выключить обслуживание' : '🔧 обслуживание';
+  maintenanceBtn.classList.toggle('active', !!isInMaintenance);
 
   const days = Math.max(1, Math.round(currentHours / 24));
 
