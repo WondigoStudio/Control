@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery } = require('./db');
 const { notify } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
@@ -141,6 +141,7 @@ function resolveRecovery(monitor) {
       maxAttempts: monitor.recovery.maxAttempts || 2,
       retryAfterFails: monitor.recovery.retryAfterFails || 10,
       maxPerHour: monitor.recovery.maxPerHour || 5,
+      cooldownMinutes: monitor.recovery.cooldownMinutes || 10,
     };
   }
   if (monitor.deployHookUrl) {
@@ -152,12 +153,13 @@ function resolveRecovery(monitor) {
       maxAttempts: 2,
       retryAfterFails: 10,
       maxPerHour: 5,
+      cooldownMinutes: 10,
     };
   }
   if (monitor.hosting && UNMANAGED_HOSTINGS.includes(monitor.hosting)) {
-    return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0, reason: `Хостинг "${monitor.hosting}" не предоставляет API для автоматического восстановления` };
+    return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0, cooldownMinutes: 0, reason: `Хостинг "${monitor.hosting}" не предоставляет API для автоматического восстановления` };
   }
-  return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0 };
+  return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0, cooldownMinutes: 0 };
 }
 
 async function runRecovery(monitor, recovery, attemptNumber, incidentId) {
@@ -288,20 +290,33 @@ async function runCheck(monitor) {
     } else if (attemptsSoFar < recovery.maxAttempts) {
       const triggerAt = recovery.afterFails + attemptsSoFar * recovery.retryAfterFails;
 
-      if (consecutiveFails === triggerAt) {
-        const recentRestarts = await countRecentRestarts(monitor.id, Date.now() - 60 * 60 * 1000);
+      // ">=", а не "===" — если попытка была отложена cooldown-ом на этом тике,
+      // на следующей проверке условие всё ещё истинно, и мы попробуем снова,
+      // а не будем ждать следующего порога retryAfterFails.
+      if (consecutiveFails >= triggerAt) {
+        const lastAttempts = await getRestartLog(monitor.id, 1);
+        const lastAttemptTs = lastAttempts.length ? lastAttempts[0].ts : null;
+        const cooldownMs = recovery.cooldownMinutes * 60 * 1000;
+        const cooldownRemaining = lastAttemptTs ? cooldownMs - (Date.now() - lastAttemptTs) : 0;
 
-        if (recentRestarts >= recovery.maxPerHour) {
-          if (!recoveryExhaustedNotified) {
-            await markRecoveryExhaustedNotified(monitor.id);
-            await notify(
-              `🛑 Лимит автоперезапусков исчерпан: ${monitor.name}`,
-              `Монитор "${monitor.name}" продолжает падать, но лимит автоперезапусков (${recovery.maxPerHour}/час) уже исчерпан — это защита от бесконечного цикла restart → crash → restart.\n\nТребуется ручное вмешательство.`
-            );
-          }
+        if (cooldownRemaining > 0) {
+          // Cooldown ещё не истёк — молча ждём, попробуем на следующей проверке.
+          // Не спамим уведомлением на каждый тик.
         } else {
-          await incrementRecoveryAttempts(monitor.id);
-          runRecovery(monitor, recovery, attemptsSoFar + 1, currentIncidentId).catch(() => {});
+          const recentRestarts = await countRecentRestarts(monitor.id, Date.now() - 60 * 60 * 1000);
+
+          if (recentRestarts >= recovery.maxPerHour) {
+            if (!recoveryExhaustedNotified) {
+              await markRecoveryExhaustedNotified(monitor.id);
+              await notify(
+                `🛑 Лимит автоперезапусков исчерпан: ${monitor.name}`,
+                `Монитор "${monitor.name}" продолжает падать, но лимит автоперезапусков (${recovery.maxPerHour}/час) уже исчерпан — это защита от бесконечного цикла restart → crash → restart.\n\nТребуется ручное вмешательство.`
+              );
+            }
+          } else {
+            await incrementRecoveryAttempts(monitor.id);
+            runRecovery(monitor, recovery, attemptsSoFar + 1, currentIncidentId).catch(() => {});
+          }
         }
       }
     } else if (!recoveryExhaustedNotified && consecutiveFails > recovery.afterFails + (recovery.maxAttempts - 1) * recovery.retryAfterFails) {
