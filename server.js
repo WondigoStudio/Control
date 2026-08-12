@@ -147,6 +147,9 @@ app.get('/api/monitors', async (req, res) => {
         uptime7d: await getUptimePercent(m.id, now - week),
         ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
         hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
+        maintenance: (m.maintenance && m.maintenance.enabled && (!m.maintenance.until || Date.now() < m.maintenance.until))
+          ? { enabled: true, until: m.maintenance.until }
+          : { enabled: false, until: null },
         recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
       };
     })
@@ -277,6 +280,20 @@ app.post('/api/monitors/:id/check-now', async (req, res) => {
 
 app.get('/api/config/monitors', (req, res) => {
   res.json(monitors);
+});
+
+app.post('/api/monitors/:id/maintenance', async (req, res) => {
+  const existing = monitors.find((m) => m.id === req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Монитор не найден' });
+
+  const { enabled, minutes } = req.body || {};
+  const until = enabled && minutes ? Date.now() + minutes * 60 * 1000 : null;
+
+  const merged = { ...existing, maintenance: { enabled: !!enabled, until } };
+  await upsertMonitorConfig(req.params.id, merged);
+  await loadMonitorsFromDb();
+
+  res.json({ ok: true, maintenance: merged.maintenance });
 });
 
 function validateMonitorConfig(body) {
