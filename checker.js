@@ -135,6 +135,9 @@ function resolveRecovery(monitor) {
       enabled: monitor.recovery.enabled !== false,
       afterFails: monitor.recovery.afterFails || 3,
       deployHookUrl: monitor.recovery.deployHookUrl || monitor.deployHookUrl,
+      agentUrl: monitor.recovery.agentUrl || null,
+      agentApiKey: monitor.recovery.agentApiKey || null,
+      serviceName: monitor.recovery.serviceName || null,
       maxAttempts: monitor.recovery.maxAttempts || 2,
       retryAfterFails: monitor.recovery.retryAfterFails || 10,
       maxPerHour: monitor.recovery.maxPerHour || 5,
@@ -167,11 +170,18 @@ async function runRecovery(monitor, recovery, attemptNumber, incidentId) {
       await restartViaRenderHook(monitor, recovery.deployHookUrl, attemptNumber, recovery.maxAttempts, incidentId);
       return;
 
-    case 'docker':
-    case 'systemd':
     case 'pm2':
+    case 'systemd':
+      if (!recovery.agentUrl || !recovery.agentApiKey || !recovery.serviceName) {
+        console.error(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" требует agentUrl, agentApiKey и serviceName — пропускаю`);
+        return;
+      }
+      await restartViaAgent(monitor, recovery, attemptNumber, incidentId);
+      return;
+
+    case 'docker':
     case 'custom':
-      console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается — нужен агент на сервере.`);
+      console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается.`);
       await logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`, incidentId);
       await markIncidentRecovery(incidentId, recovery.provider, 'not_implemented');
       return;
@@ -179,6 +189,33 @@ async function runRecovery(monitor, recovery, attemptNumber, incidentId) {
     case 'none':
     default:
       return;
+  }
+}
+
+async function restartViaAgent(monitor, recovery, attemptNumber, incidentId) {
+  const attemptLabel = attemptNumber && recovery.maxAttempts ? ` (попытка ${attemptNumber}/${recovery.maxAttempts})` : '';
+  try {
+    const res = await fetch(`${recovery.agentUrl}/restart/${recovery.serviceName}`, {
+      method: 'POST',
+      headers: { 'X-Agent-Key': recovery.agentApiKey },
+    });
+    const data = await res.json();
+    const ok = res.ok && data.ok;
+    await logRestartAttempt(monitor.id, ok, ok ? null : (data.error || `HTTP ${res.status}`), incidentId);
+    await markIncidentRecovery(incidentId, recovery.provider, ok ? 'success' : 'failed');
+    await notify(
+      ok ? `🔁 Автоперезапуск${attemptLabel}: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
+      ok
+        ? `Монитор "${monitor.name}" упал несколько проверок подряд. VPS Agent перезапустил процесс "${recovery.serviceName}"${attemptLabel}.\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        : `Попытка перезапуска "${monitor.name}"${attemptLabel} через VPS Agent не удалась: ${data.error || res.status}.\nПроверь агент вручную на VPS.`
+    );
+  } catch (e) {
+    await logRestartAttempt(monitor.id, false, e.message, incidentId);
+    await markIncidentRecovery(incidentId, recovery.provider, 'failed');
+    await notify(
+      `⚠️ Не удалось связаться с VPS Agent для ${monitor.name}${attemptLabel}`,
+      `Попытка перезапуска "${monitor.name}"${attemptLabel} завершилась ошибкой: ${e.message}\nПроверь, что VPS Agent запущен и доступен по сети.`
+    );
   }
 }
 
@@ -223,12 +260,17 @@ async function runCheck(monitor) {
   const prevState = await getState(monitor.id);
   const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = await updateMonitorState(monitor.id, result.ok);
 
+  // Диагноз считаем один раз на каждую проверку в статусе "down" — используется
+  // и для инцидента, и для решения, стоит ли вообще пытаться восстановить.
+  const currentDiagnosis = newStatus === 'down'
+    ? diagnose({ error: result.error, statusCode: result.statusCode, responseMs: result.responseMs, timeoutMs: monitor.timeoutMs, hosting: monitor.hosting })
+    : null;
+
   // --- Incident lifecycle ---
   let currentIncidentId = null;
   if (newStatus === 'down') {
     if (statusChanged) {
-      const d = diagnose({ error: result.error, statusCode: result.statusCode, responseMs: result.responseMs, timeoutMs: monitor.timeoutMs, hosting: monitor.hosting });
-      currentIncidentId = await openIncident(monitor.id, Date.now(), d.category, d.label, d.explanation, d.suggestion, result.error);
+      currentIncidentId = await openIncident(monitor.id, Date.now(), currentDiagnosis.category, currentDiagnosis.label, currentDiagnosis.explanation, currentDiagnosis.suggestion, result.error);
     } else {
       currentIncidentId = prevState ? prevState.current_incident_id : null;
       await incrementIncidentChecks(currentIncidentId, result.error);
@@ -252,12 +294,30 @@ async function runCheck(monitor) {
     }
   }
 
+  // --- Recovery Conditions ---
+  // Не всякая причина падения означает, что перезапуск поможет. Например,
+  // при DNS_PROBLEM, SSL_PROBLEM или SUSPENDED перезапуск процесса бессмыслен —
+  // проблема не в самом процессе, и попытка restart только маскирует
+  // реальную причину. Разрешаем автовосстановление только для категорий,
+  // где перезапуск процесса действительно может помочь.
+  const RECOVERY_ALLOWED_CATEGORIES = ['TIMEOUT', 'HOSTING_PROBLEM', 'CONNECTION_REFUSED', 'CONTENT_MISMATCH', 'UNKNOWN'];
+  const recoveryAllowedByCategory = !currentDiagnosis || RECOVERY_ALLOWED_CATEGORIES.includes(currentDiagnosis.category);
+
   // --- Recovery Policy ---
   const recovery = resolveRecovery(monitor);
   if (recovery.enabled && recovery.provider !== 'none' && newStatus === 'down') {
     const attemptsSoFar = recoveryAttempts;
 
-    if (attemptsSoFar < recovery.maxAttempts) {
+    if (!recoveryAllowedByCategory) {
+      // Причина падения не из тех, что лечатся перезапуском — сообщаем один раз
+      // при первом достижении порога и больше не пытаемся restart на этом падении.
+      if (attemptsSoFar === 0 && consecutiveFails === recovery.afterFails) {
+        await notify(
+          `ℹ️ Автовосстановление пропущено: ${monitor.name}`,
+          `Монитор "${monitor.name}" недоступен по причине "${currentDiagnosis.label}" (${currentDiagnosis.category}) — перезапуск процесса в этом случае не поможет, поэтому автовосстановление не запускалось.\n\n${currentDiagnosis.explanation}\n\n💡 ${currentDiagnosis.suggestion}`
+        );
+      }
+    } else if (attemptsSoFar < recovery.maxAttempts) {
       const triggerAt = recovery.afterFails + attemptsSoFar * recovery.retryAfterFails;
 
       if (consecutiveFails === triggerAt) {
@@ -296,7 +356,37 @@ async function runCheck(monitor) {
     runAutoDiagnostics(monitor).catch(() => {});
   }
 
+  // Failover: проверяем резервный адрес один раз в самом начале падения
+  // (сразу при открытии инцидента), чтобы не спамить проверками на каждый тик
+  if (statusChanged && newStatus === 'down' && monitor.failover && monitor.failover.backupUrl) {
+    checkFailoverBackup(monitor).catch(() => {});
+  }
+
   return result;
+}
+
+// --- Failover (облегчённая версия) ---
+// Настоящее автоматическое переключение трафика требует контроля над DNS
+// (например, через Cloudflare API), которого у нас пока нет. Вместо этого —
+// проверяем, жив ли резервный адрес, и явно говорим тебе, что можно вручную
+// переключиться, вместо того чтобы притворяться, что переключение уже произошло.
+async function checkFailoverBackup(monitor) {
+  if (!monitor.failover || !monitor.failover.backupUrl) return;
+  try {
+    const res = await timingFetch(monitor.failover.backupUrl, { timeoutMs: monitor.timeoutMs || 8000 });
+    const backupOk = res.statusCode >= 200 && res.statusCode < 400;
+    await notify(
+      backupOk ? `🟡 Резервный адрес доступен: ${monitor.name}` : `🔴 Резервный адрес тоже недоступен: ${monitor.name}`,
+      backupOk
+        ? `Основной адрес "${monitor.name}" недоступен, но резервный (${monitor.failover.backupUrl}) отвечает нормально.\n\nЭто НЕ автоматическое переключение — трафик всё ещё идёт на основной адрес. Если хочешь переключиться, сделай это вручную (смени DNS/ссылку в боте и т.п.).`
+        : `Основной адрес "${monitor.name}" недоступен, и резервный (${monitor.failover.backupUrl}) тоже не отвечает. Резервироваться некуда.`
+    );
+  } catch (e) {
+    await notify(
+      `🔴 Резервный адрес тоже недоступен: ${monitor.name}`,
+      `Основной адрес "${monitor.name}" недоступен. Проверка резервного адреса завершилась ошибкой: ${e.message}`
+    );
+  }
 }
 
 async function runAutoDiagnostics(monitor) {
