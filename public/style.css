@@ -638,3 +638,82 @@ html, body {
   color: var(--accent);
   background: rgba(242, 181, 68, 0.1);
 }
+
+/* Полноценная карточка инцидента (Этап 8) */
+.incident-card {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.incident-card.ongoing {
+  border-color: rgba(227, 91, 82, 0.4);
+}
+
+.inc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.inc-id {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+}
+.inc-status {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 3px 9px;
+  border-radius: 3px;
+}
+.inc-status-ongoing { background: rgba(227,91,82,0.15); color: var(--down); }
+.inc-status-recovered { background: rgba(53,196,140,0.15); color: var(--up); }
+
+.inc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+}
+.inc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.inc-field-wide {
+  grid-column: 1 / -1;
+}
+.inc-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.inc-value {
+  color: var(--text);
+  font-size: 12px;
+  word-break: break-word;
+}
+.inc-result-success { color: var(--up); font-weight: 700; }
+.inc-result-fail { color: var(--down); font-weight: 700; }
+.inc-result-warn { color: var(--accent); font-weight: 700; }
+
+.incident-card .incident-diag {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+}
+.incident-card .diag-explain {
+  color: var(--text-dim);
+  margin-top: 0;
+}
+.incident-card .diag-suggest {
+  color: var(--accent);
+  margin-top: 6px;
+}
