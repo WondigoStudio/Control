@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts } = require('./db');
 const { notify } = require('./notifier');
 const { detectSuspensionSignature } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
@@ -158,6 +158,9 @@ function resolveRecovery(monitor) {
       enabled: monitor.recovery.enabled !== false,
       afterFails: monitor.recovery.afterFails || 3,
       deployHookUrl: monitor.recovery.deployHookUrl || monitor.deployHookUrl,
+      maxAttempts: monitor.recovery.maxAttempts || 2,
+      retryAfterFails: monitor.recovery.retryAfterFails || 10,
+      maxPerHour: monitor.recovery.maxPerHour || 5,
     };
   }
   if (monitor.deployHookUrl) {
@@ -166,22 +169,25 @@ function resolveRecovery(monitor) {
       enabled: true,
       afterFails: monitor.restartAfterFails || 3,
       deployHookUrl: monitor.deployHookUrl,
+      maxAttempts: 2,
+      retryAfterFails: 10,
+      maxPerHour: 5,
     };
   }
   if (monitor.hosting && UNMANAGED_HOSTINGS.includes(monitor.hosting)) {
-    return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, reason: `Хостинг "${monitor.hosting}" не предоставляет API для автоматического восстановления` };
+    return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0, reason: `Хостинг "${monitor.hosting}" не предоставляет API для автоматического восстановления` };
   }
-  return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null };
+  return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0 };
 }
 
-async function runRecovery(monitor, recovery) {
+async function runRecovery(monitor, recovery, attemptNumber) {
   switch (recovery.provider) {
     case 'render':
       if (!recovery.deployHookUrl) {
         console.error(`[Recovery] provider "render" для "${monitor.name}" без deployHookUrl — пропускаю`);
         return;
       }
-      await restartViaRenderHook(monitor, recovery.deployHookUrl);
+      await restartViaRenderHook(monitor, recovery.deployHookUrl, attemptNumber, recovery.maxAttempts);
       return;
 
     case 'docker':
@@ -201,22 +207,23 @@ async function runRecovery(monitor, recovery) {
   }
 }
 
-async function restartViaRenderHook(monitor, deployHookUrl) {
+async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAttempts) {
+  const attemptLabel = attemptNumber && maxAttempts ? ` (попытка ${attemptNumber}/${maxAttempts})` : '';
   try {
     const res = await fetch(deployHookUrl, { method: 'POST' });
     const ok = res.ok;
     logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`);
     await notify(
-      ok ? `🔁 Автоперезапуск: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}`,
+      ok ? `🔁 Автоперезапуск${attemptLabel}: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
       ok
-        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через Render deploy hook.\nВремя: ${new Date().toLocaleString('ru-RU')}`
-        : `Попытка автоперезапуска "${monitor.name}" не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
+        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через Render deploy hook${attemptLabel}.\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        : `Попытка автоперезапуска "${monitor.name}"${attemptLabel} не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
     );
   } catch (e) {
     logRestartAttempt(monitor.id, false, e.message);
     await notify(
-      `⚠️ Не удалось перезапустить ${monitor.name}`,
-      `Попытка автоперезапуска "${monitor.name}" завершилась ошибкой: ${e.message}`
+      `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
+      `Попытка автоперезапуска "${monitor.name}"${attemptLabel} завершилась ошибкой: ${e.message}`
     );
   }
 }
@@ -238,7 +245,7 @@ async function runCheck(monitor) {
   }
 
   const prevState = getState(monitor.id);
-  const { newStatus, statusChanged, consecutiveFails, restartAttempted } = updateMonitorState(monitor.id, result.ok);
+  const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = updateMonitorState(monitor.id, result.ok);
 
   if (statusChanged && prevState) {
     if (newStatus === 'down') {
@@ -254,17 +261,43 @@ async function runCheck(monitor) {
     }
   }
 
-  // Автоперезапуск: смотрим, что умеет делать этот монитор при падении
+  // --- Recovery Policy ---
+  // Единая политика: несколько попыток восстановления на одно падение
+  // (с нарастающим интервалом между ними), общий лимит попыток в час
+  // (защита от цикла restart → crash → restart), и итоговое уведомление
+  // "восстановление исчерпано", если ничего не помогло.
   const recovery = resolveRecovery(monitor);
-  if (
-    recovery.enabled &&
-    recovery.provider !== 'none' &&
-    newStatus === 'down' &&
-    consecutiveFails === recovery.afterFails &&
-    !restartAttempted
-  ) {
-    markRestartAttempted(monitor.id);
-    runRecovery(monitor, recovery).catch(() => {});
+  if (recovery.enabled && recovery.provider !== 'none' && newStatus === 'down') {
+    const attemptsSoFar = recoveryAttempts;
+
+    if (attemptsSoFar < recovery.maxAttempts) {
+      // Первая попытка — после afterFails, каждая следующая — ещё через retryAfterFails
+      const triggerAt = recovery.afterFails + attemptsSoFar * recovery.retryAfterFails;
+
+      if (consecutiveFails === triggerAt) {
+        const recentRestarts = countRecentRestarts(monitor.id, Date.now() - 60 * 60 * 1000);
+
+        if (recentRestarts >= recovery.maxPerHour) {
+          if (!recoveryExhaustedNotified) {
+            markRecoveryExhaustedNotified(monitor.id);
+            await notify(
+              `🛑 Лимит автоперезапусков исчерпан: ${monitor.name}`,
+              `Монитор "${monitor.name}" продолжает падать, но лимит автоперезапусков (${recovery.maxPerHour}/час) уже исчерпан — это защита от бесконечного цикла restart → crash → restart.\n\nТребуется ручное вмешательство.`
+            );
+          }
+        } else {
+          incrementRecoveryAttempts(monitor.id);
+          runRecovery(monitor, recovery, attemptsSoFar + 1).catch(() => {});
+        }
+      }
+    } else if (!recoveryExhaustedNotified && consecutiveFails > recovery.afterFails + (recovery.maxAttempts - 1) * recovery.retryAfterFails) {
+      // Все попытки исчерпаны, а монитор всё ещё лежит — критический инцидент
+      markRecoveryExhaustedNotified(monitor.id);
+      await notify(
+        `🛑 Автовосстановление не помогло: ${monitor.name}`,
+        `Все ${recovery.maxAttempts} попыт(ки/ка) автоперезапуска для "${monitor.name}" исчерпаны, но монитор всё ещё недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\n\nТребуется ручная проверка.`
+      );
+    }
   }
 
   // Для мониторов, где автовосстановление недоступно (provider: "none") —
