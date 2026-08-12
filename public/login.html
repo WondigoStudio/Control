@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Вход · Пульт наблюдения</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .login-box {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 32px;
+    width: min(380px, 100%);
+  }
+  .login-title {
+    font-family: var(--mono);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    font-size: 14px;
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .login-box input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    box-sizing: border-box;
+    margin-bottom: 14px;
+  }
+  .login-box input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .login-box button {
+    width: 100%;
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    padding: 12px;
+    color: #1a1500;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .login-box button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .login-error {
+    color: var(--down);
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-top: 12px;
+    text-align: center;
+    min-height: 16px;
+  }
+</style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <div class="login-title">🔒&nbsp;ПУЛЬТ&nbsp;НАБЛЮДЕНИЯ</div>
+      <form id="loginForm" autocomplete="off">
+        <input
+          type="password"
+          id="password"
+          placeholder="Пароль"
+          maxlength="512"
+          autofocus
+        >
+        <button type="submit" id="submitBtn">Войти</button>
+      </form>
+      <div class="login-error" id="errorText"></div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const btn = document.getElementById('submitBtn');
+    const errorText = document.getElementById('errorText');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('password').value;
+      btn.disabled = true;
+      btn.textContent = 'Проверяю...';
+      errorText.textContent = '';
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+        const data = await res.json();
+        if (res.ok && data.ok) {
+          window.location.href = '/';
+        } else {
+          errorText.textContent = data.error || 'Неверный пароль';
+        }
+      } catch (err) {
+        errorText.textContent = 'Ошибка соединения';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Войти';
+      }
+    });
+  </script>
+</body>
+</html>
