@@ -5,6 +5,7 @@ const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRest
 const { notify } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
+const { timingFetch } = require('./timingFetch');
 
 function checkSSLCert(hostname) {
   return new Promise((resolve) => {
@@ -35,11 +36,10 @@ async function runSSLCheck(monitor) {
   try {
     const hostname = new URL(monitor.url).hostname;
     const result = await checkSSLCert(hostname);
-    setSSLStatus(monitor.id, result.valid, result.expiresAt, result.daysLeft, result.error);
+    await setSSLStatus(monitor.id, result.valid, result.expiresAt, result.daysLeft, result.error);
 
-    // Уведомляем один раз, когда сертификат приближается к истечению (<=14 дней)
     if (result.valid && result.daysLeft <= 14) {
-      const prev = getSSLStatus(monitor.id);
+      const prev = await getSSLStatus(monitor.id);
       const alreadyWarned = prev && prev.days_left !== null && prev.days_left <= 14;
       if (!alreadyWarned) {
         await notify(
@@ -49,11 +49,9 @@ async function runSSLCheck(monitor) {
       }
     }
   } catch (e) {
-    setSSLStatus(monitor.id, false, null, null, e.message);
+    await setSSLStatus(monitor.id, false, null, null, e.message);
   }
 }
-
-const { timingFetch } = require('./timingFetch');
 
 async function checkHttp(monitor) {
   const start = Date.now();
@@ -68,13 +66,8 @@ async function checkHttp(monitor) {
       contentOk = res.body.includes(monitor.expectedContent);
     }
 
-    // Проверяем на типовую страницу "аккаунт приостановлен" ВСЕГДА, даже
-    // если статус-код в норме — бесплатные хостинги часто отдают 200
-    // с генерической заглушкой вместо реального сайта.
     const suspensionMatch = detectSuspensionSignature(res.body);
 
-    // Если это health-эндпоинт бота (см. templates/health_server.*) —
-    // пытаемся распарсить JSON вида {status, uptime, version}
     let botHealth = null;
     if (monitor.url.includes('/health')) {
       try {
@@ -133,22 +126,6 @@ async function checkTelegramBot(monitor) {
 }
 
 // --- Recovery Providers ---
-// Определяет, ЧТО умеет делать монитор при падении. "none" не означает
-// бездействие — диагностика и уведомление всё равно работают, просто
-// без попытки автоматически перезапустить сервис.
-//
-// Формат в monitors.json:
-// "recovery": {
-//   "provider": "render" | "none" | "docker" | "systemd" | "pm2" | "custom",
-//   "enabled": true,
-//   "afterFails": 3,
-//   "deployHookUrl": "..."   // только для provider: "render"
-// }
-//
-// Обратная совместимость: если "recovery" не задан, но есть старое поле
-// deployHookUrl — трактуем как provider: "render" автоматически.
-// Хостинги, у которых заведомо нет публичного API для управления сервером —
-// автоперезапуск для них технически невозможен без ручного вмешательства.
 const UNMANAGED_HOSTINGS = ['infinityfree', 'hidden_cloud'];
 
 function resolveRecovery(monitor) {
@@ -194,16 +171,13 @@ async function runRecovery(monitor, recovery, attemptNumber, incidentId) {
     case 'systemd':
     case 'pm2':
     case 'custom':
-      // Требуют агента на стороне сервера (см. дорожную карту) — пока не реализовано.
       console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается — нужен агент на сервере.`);
-      logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`, incidentId);
-      markIncidentRecovery(incidentId, recovery.provider, 'not_implemented');
+      await logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`, incidentId);
+      await markIncidentRecovery(incidentId, recovery.provider, 'not_implemented');
       return;
 
     case 'none':
     default:
-      // Ничего не делаем — восстановление недоступно для этого хостинга.
-      // Диагностика и уведомления при этом продолжают работать как обычно.
       return;
   }
 }
@@ -213,8 +187,8 @@ async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAt
   try {
     const res = await fetch(deployHookUrl, { method: 'POST' });
     const ok = res.ok;
-    logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`, incidentId);
-    markIncidentRecovery(incidentId, 'render', ok ? 'success' : 'failed');
+    await logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`, incidentId);
+    await markIncidentRecovery(incidentId, 'render', ok ? 'success' : 'failed');
     await notify(
       ok ? `🔁 Автоперезапуск${attemptLabel}: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
       ok
@@ -222,8 +196,8 @@ async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAt
         : `Попытка автоперезапуска "${monitor.name}"${attemptLabel} не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
     );
   } catch (e) {
-    logRestartAttempt(monitor.id, false, e.message, incidentId);
-    markIncidentRecovery(incidentId, 'render', 'failed');
+    await logRestartAttempt(monitor.id, false, e.message, incidentId);
+    await markIncidentRecovery(incidentId, 'render', 'failed');
     await notify(
       `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
       `Попытка автоперезапуска "${monitor.name}"${attemptLabel} завершилась ошибкой: ${e.message}`
@@ -239,32 +213,28 @@ async function runCheck(monitor) {
     result = await checkHttp(monitor);
   }
 
-  insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing, result.botHealth);
+  await insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing, result.botHealth);
 
-  // SSL-проверка не нужна каждый раз — раз в сутки на монитор достаточно
-  const lastSSL = getSSLStatus(monitor.id);
+  const lastSSL = await getSSLStatus(monitor.id);
   if (!lastSSL || Date.now() - lastSSL.checked_at > 24 * 60 * 60 * 1000) {
     runSSLCheck(monitor).catch(() => {});
   }
 
-  const prevState = getState(monitor.id);
-  const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = updateMonitorState(monitor.id, result.ok);
+  const prevState = await getState(monitor.id);
+  const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = await updateMonitorState(monitor.id, result.ok);
 
   // --- Incident lifecycle ---
-  // Одна запись на всё падение целиком: открывается при первом переходе
-  // в "down", обновляется на каждой последующей неудачной проверке,
-  // закрывается при восстановлении. recovery-попытки привязываются к ней.
   let currentIncidentId = null;
   if (newStatus === 'down') {
     if (statusChanged) {
       const d = diagnose({ error: result.error, statusCode: result.statusCode, responseMs: result.responseMs, timeoutMs: monitor.timeoutMs, hosting: monitor.hosting });
-      currentIncidentId = openIncident(monitor.id, Date.now(), d.category, d.label, d.explanation, d.suggestion, result.error);
+      currentIncidentId = await openIncident(monitor.id, Date.now(), d.category, d.label, d.explanation, d.suggestion, result.error);
     } else {
       currentIncidentId = prevState ? prevState.current_incident_id : null;
-      incrementIncidentChecks(currentIncidentId, result.error);
+      await incrementIncidentChecks(currentIncidentId, result.error);
     }
   } else if (statusChanged && prevState && prevState.current_incident_id) {
-    closeIncident(monitor.id, prevState.current_incident_id, Date.now());
+    await closeIncident(monitor.id, prevState.current_incident_id, Date.now());
   }
 
   if (statusChanged && prevState) {
@@ -273,7 +243,7 @@ async function runCheck(monitor) {
         `🔴 ${monitor.name} недоступен`,
         `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
       );
-      markIncidentNotified(currentIncidentId);
+      await markIncidentNotified(currentIncidentId);
     } else {
       await notify(
         `🟢 ${monitor.name} снова доступен`,
@@ -283,37 +253,31 @@ async function runCheck(monitor) {
   }
 
   // --- Recovery Policy ---
-  // Единая политика: несколько попыток восстановления на одно падение
-  // (с нарастающим интервалом между ними), общий лимит попыток в час
-  // (защита от цикла restart → crash → restart), и итоговое уведомление
-  // "восстановление исчерпано", если ничего не помогло.
   const recovery = resolveRecovery(monitor);
   if (recovery.enabled && recovery.provider !== 'none' && newStatus === 'down') {
     const attemptsSoFar = recoveryAttempts;
 
     if (attemptsSoFar < recovery.maxAttempts) {
-      // Первая попытка — после afterFails, каждая следующая — ещё через retryAfterFails
       const triggerAt = recovery.afterFails + attemptsSoFar * recovery.retryAfterFails;
 
       if (consecutiveFails === triggerAt) {
-        const recentRestarts = countRecentRestarts(monitor.id, Date.now() - 60 * 60 * 1000);
+        const recentRestarts = await countRecentRestarts(monitor.id, Date.now() - 60 * 60 * 1000);
 
         if (recentRestarts >= recovery.maxPerHour) {
           if (!recoveryExhaustedNotified) {
-            markRecoveryExhaustedNotified(monitor.id);
+            await markRecoveryExhaustedNotified(monitor.id);
             await notify(
               `🛑 Лимит автоперезапусков исчерпан: ${monitor.name}`,
               `Монитор "${monitor.name}" продолжает падать, но лимит автоперезапусков (${recovery.maxPerHour}/час) уже исчерпан — это защита от бесконечного цикла restart → crash → restart.\n\nТребуется ручное вмешательство.`
             );
           }
         } else {
-          incrementRecoveryAttempts(monitor.id);
+          await incrementRecoveryAttempts(monitor.id);
           runRecovery(monitor, recovery, attemptsSoFar + 1, currentIncidentId).catch(() => {});
         }
       }
     } else if (!recoveryExhaustedNotified && consecutiveFails > recovery.afterFails + (recovery.maxAttempts - 1) * recovery.retryAfterFails) {
-      // Все попытки исчерпаны, а монитор всё ещё лежит — критический инцидент
-      markRecoveryExhaustedNotified(monitor.id);
+      await markRecoveryExhaustedNotified(monitor.id);
       await notify(
         `🛑 Автовосстановление не помогло: ${monitor.name}`,
         `Все ${recovery.maxAttempts} попыт(ки/ка) автоперезапуска для "${monitor.name}" исчерпаны, но монитор всё ещё недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\n\nТребуется ручная проверка.`
@@ -321,10 +285,6 @@ async function runCheck(monitor) {
     }
   }
 
-  // Для мониторов, где автовосстановление недоступно (provider: "none") —
-  // компенсируем это углублённой диагностикой: проверяем из разных локаций,
-  // чтобы отличить реальное падение хостинга от локального глюка нашего
-  // единственного сервера-наблюдателя. Срабатывает один раз за падение.
   if (
     recovery.provider === 'none' &&
     monitor.type === 'http' &&
@@ -332,7 +292,7 @@ async function runCheck(monitor) {
     consecutiveFails === recovery.afterFails &&
     !restartAttempted
   ) {
-    markRestartAttempted(monitor.id);
+    await markRestartAttempted(monitor.id);
     runAutoDiagnostics(monitor).catch(() => {});
   }
 
@@ -342,7 +302,7 @@ async function runCheck(monitor) {
 async function runAutoDiagnostics(monitor) {
   try {
     const results = await checkMultiLocation(monitor.url);
-    saveMultiLocationResult(monitor.id, results);
+    await saveMultiLocationResult(monitor.id, results);
 
     const total = results.length;
     const downCount = results.filter((r) => r.ok === false).length;
