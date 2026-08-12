@@ -7,7 +7,12 @@ const fs = require('fs');
 const { runCheck } = require('./checker');
 const { diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
-const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary, getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor } = require('./db');
+const {
+  initDb,
+  getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
+  getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary,
+  getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
+} = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,32 +24,34 @@ app.use(express.json());
 
 // --- API ---
 
-app.get('/api/monitors', (req, res) => {
+app.get('/api/monitors', async (req, res) => {
   const now = Date.now();
   const day = 24 * 60 * 60 * 1000;
   const week = 7 * day;
 
-  let data = monitors.filter((m) => m.type !== 'reminder').map((m) => {
-    const last = getLastCheck(m.id);
-    const ssl = getSSLStatus(m.id);
-    return {
-      id: m.id,
-      name: m.name,
-      type: m.type,
-      target: m.url || m.name,
-      status: last ? (last.ok ? 'up' : 'down') : 'unknown',
-      lastResponseMs: last ? last.response_ms : null,
-      lastCheckedAt: last ? last.ts : null,
-      lastError: last ? last.error : null,
-      lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
-      hosting: m.hosting || 'other',
-      uptime24h: getUptimePercent(m.id, now - day),
-      uptime7d: getUptimePercent(m.id, now - week),
-      ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
-      hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
-      recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
-    };
-  });
+  let data = await Promise.all(
+    monitors.filter((m) => m.type !== 'reminder').map(async (m) => {
+      const last = await getLastCheck(m.id);
+      const ssl = await getSSLStatus(m.id);
+      return {
+        id: m.id,
+        name: m.name,
+        type: m.type,
+        target: m.url || m.name,
+        status: last ? (last.ok ? 'up' : 'down') : 'unknown',
+        lastResponseMs: last ? last.response_ms : null,
+        lastCheckedAt: last ? last.ts : null,
+        lastError: last ? last.error : null,
+        lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
+        hosting: m.hosting || 'other',
+        uptime24h: await getUptimePercent(m.id, now - day),
+        uptime7d: await getUptimePercent(m.id, now - week),
+        ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
+        hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
+        recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
+      };
+    })
+  );
 
   if (req.query.sort === 'reliability') {
     data = data.sort((a, b) => (b.uptime7d ?? -1) - (a.uptime7d ?? -1));
@@ -53,13 +60,13 @@ app.get('/api/monitors', (req, res) => {
   res.json(data);
 });
 
-app.get('/api/monitors/:id/restarts', (req, res) => {
-  const log = getRestartLog(req.params.id, 10);
+app.get('/api/monitors/:id/restarts', async (req, res) => {
+  const log = await getRestartLog(req.params.id, 10);
   res.json(log);
 });
 
-app.get('/api/monitors/:id/locations', (req, res) => {
-  const cached = getMultiLocationResult(req.params.id);
+app.get('/api/monitors/:id/locations', async (req, res) => {
+  const cached = await getMultiLocationResult(req.params.id);
   res.json(cached);
 });
 
@@ -71,37 +78,34 @@ app.post('/api/monitors/:id/locations', async (req, res) => {
   }
   try {
     const results = await checkMultiLocation(monitor.url);
-    saveMultiLocationResult(monitor.id, results);
+    await saveMultiLocationResult(monitor.id, results);
     res.json({ ts: Date.now(), results });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get('/api/monitors/:id/history', (req, res) => {
+app.get('/api/monitors/:id/history', async (req, res) => {
   const hours = parseInt(req.query.hours || '24', 10);
   const since = Date.now() - hours * 60 * 60 * 1000;
 
   let history;
   if (hours <= 24) {
-    // Короткий период — показываем все точки как есть
-    history = getHistory(req.params.id, since);
+    history = await getHistory(req.params.id, since);
   } else if (hours <= 168) {
-    // 7 дней — усредняем по часам, иначе точек слишком много
-    history = getHistoryAggregated(req.params.id, since, 60);
+    history = await getHistoryAggregated(req.params.id, since, 60);
   } else {
-    // 30 дней — усредняем по 4-часовым интервалам
-    history = getHistoryAggregated(req.params.id, since, 240);
+    history = await getHistoryAggregated(req.params.id, since, 240);
   }
 
   res.json(history);
 });
 
-app.get('/api/monitors/:id/incidents', (req, res) => {
+app.get('/api/monitors/:id/incidents', async (req, res) => {
   const days = parseInt(req.query.days || '7', 10);
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
 
-  const rows = getIncidentsForMonitor(req.params.id, since, 100);
+  const rows = await getIncidentsForMonitor(req.params.id, since, 100);
 
   const incidents = rows.map((inc) => ({
     id: inc.id,
@@ -128,16 +132,16 @@ app.get('/api/monitors/:id/incidents', (req, res) => {
   res.json(incidents);
 });
 
-app.get('/api/monitors/:id/stats', (req, res) => {
+app.get('/api/monitors/:id/stats', async (req, res) => {
   const hours = parseInt(req.query.hours || '24', 10);
   const since = Date.now() - hours * 60 * 60 * 1000;
-  const stats = getResponseStats(req.params.id, since);
+  const stats = await getResponseStats(req.params.id, since);
   res.json(stats);
 });
 
-app.get('/api/monitors/:id/heatmap', (req, res) => {
+app.get('/api/monitors/:id/heatmap', async (req, res) => {
   const days = parseInt(req.query.days || '90', 10);
-  const heatmap = getDailyUptime(req.params.id, days);
+  const heatmap = await getDailyUptime(req.params.id, days);
   res.json(heatmap);
 });
 
@@ -145,14 +149,16 @@ app.get('/api/time', (req, res) => {
   res.json({ now: Date.now() });
 });
 
-app.get('/api/summary', (req, res) => {
+app.get('/api/summary', async (req, res) => {
   const week = 7 * 24 * 60 * 60 * 1000;
   const since = Date.now() - week;
 
-  const data = monitors.filter((m) => m.type !== 'reminder').map((m) => {
-    const s = getMonitorSummary(m.id, since);
-    return { id: m.id, name: m.name, uptime7d: s.uptime, avgResponseMs: s.avgResponseMs, incidentsCount: s.incidentsCount };
-  });
+  const data = await Promise.all(
+    monitors.filter((m) => m.type !== 'reminder').map(async (m) => {
+      const s = await getMonitorSummary(m.id, since);
+      return { id: m.id, name: m.name, uptime7d: s.uptime, avgResponseMs: s.avgResponseMs, incidentsCount: s.incidentsCount };
+    })
+  );
 
   data.sort((a, b) => (a.uptime7d ?? 101) - (b.uptime7d ?? 101));
 
@@ -166,8 +172,7 @@ app.post('/api/monitors/:id/check-now', async (req, res) => {
   res.json(result);
 });
 
-// --- Планировщик: проверяем каждый монитор по своему интервалу ---
-// Для простоты используем единый тик раз в минуту и внутри решаем, кому пора проверяться
+// --- Планировщик ---
 const lastRunMap = {};
 
 cron.schedule('* * * * *', () => {
@@ -186,16 +191,25 @@ cron.schedule('* * * * *', () => {
   });
 });
 
-// Запускаем первую проверку сразу при старте сервера
-monitors.filter((m) => m.type !== 'reminder').forEach(async (m) => {
-  lastRunMap[m.id] = Date.now();
-  try {
-    await runCheck(m);
-  } catch (e) {
-    console.error(`Ошибка первой проверки ${m.id}:`, e.message);
-  }
-});
+// --- Запуск: сначала инициализируем БД, потом стартуем сервер и проверки ---
+async function start() {
+  await initDb();
 
-app.listen(PORT, () => {
-  console.log(`Status Monitor запущен: http://localhost:${PORT}`);
+  for (const m of monitors.filter((x) => x.type !== 'reminder')) {
+    lastRunMap[m.id] = Date.now();
+    try {
+      await runCheck(m);
+    } catch (e) {
+      console.error(`Ошибка первой проверки ${m.id}:`, e.message);
+    }
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Status Monitor запущен: http://localhost:${PORT}`);
+  });
+}
+
+start().catch((e) => {
+  console.error('Не удалось запустить сервер:', e);
+  process.exit(1);
 });
