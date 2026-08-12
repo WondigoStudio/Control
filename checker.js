@@ -73,6 +73,24 @@ async function checkHttp(monitor) {
     // с генерической заглушкой вместо реального сайта.
     const suspensionMatch = detectSuspensionSignature(res.body);
 
+    // Если это health-эндпоинт бота (см. templates/health_server.*) —
+    // пытаемся распарсить JSON вида {status, uptime, version}
+    let botHealth = null;
+    if (monitor.url.includes('/health')) {
+      try {
+        const parsed = JSON.parse(res.body);
+        if (parsed && typeof parsed === 'object' && 'status' in parsed) {
+          botHealth = {
+            status: parsed.status,
+            uptimeSec: parsed.uptime ?? null,
+            version: parsed.version ?? null,
+          };
+        }
+      } catch (e) {
+        // не JSON — просто не бот-health-эндпоинт, работаем как с обычным сайтом
+      }
+    }
+
     const ok = statusOk && (contentOk === null || contentOk === true) && !suspensionMatch;
     let error = null;
     if (suspensionMatch) error = `SUSPENSION_PAGE_DETECTED: ${suspensionMatch}`;
@@ -91,9 +109,10 @@ async function checkHttp(monitor) {
       },
       contentOk,
       timing: res.timing,
+      botHealth,
     };
   } catch (e) {
-    return { ok: false, responseMs: Date.now() - start, statusCode: null, error: e.message, headers: null, contentOk: null, timing: null };
+    return { ok: false, responseMs: Date.now() - start, statusCode: null, error: e.message, headers: null, contentOk: null, timing: null, botHealth: null };
   }
 }
 
@@ -210,7 +229,7 @@ async function runCheck(monitor) {
     result = await checkHttp(monitor);
   }
 
-  insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing);
+  insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing, result.botHealth);
 
   // SSL-проверка не нужна каждый раз — раз в сутки на монитор достаточно
   const lastSSL = getSSLStatus(monitor.id);
