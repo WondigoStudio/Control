@@ -627,3 +627,14 @@ html, body {
   top: 16px;
   right: 56px;
 }
+
+.maintenance-btn {
+  position: absolute;
+  top: 16px;
+  right: 200px;
+}
+.maintenance-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(242, 181, 68, 0.1);
+}
