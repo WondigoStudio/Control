@@ -13,12 +13,37 @@ const {
   getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
   getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary,
   getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
+  getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
 } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const monitors = JSON.parse(fs.readFileSync(path.join(__dirname, 'monitors.json'), 'utf-8'));
+// Список мониторов теперь хранится в Turso (таблица monitor_configs),
+// а не только в monitors.json — это позволяет добавлять/редактировать/удалять
+// мониторы через UI без правки файла и ожидания редеплоя.
+// monitors.json используется только для ОДНОРАЗОВОЙ миграции при самом первом
+// запуске, если таблица в БД ещё пустая.
+let monitors = [];
+
+async function loadMonitorsFromDb() {
+  monitors = await getAllMonitorConfigs();
+}
+
+async function migrateFromFileIfNeeded() {
+  const count = await countMonitorConfigs();
+  if (count > 0) return;
+
+  try {
+    const fileMonitors = JSON.parse(fs.readFileSync(path.join(__dirname, 'monitors.json'), 'utf-8'));
+    for (const m of fileMonitors) {
+      await upsertMonitorConfig(m.id, m);
+    }
+    console.log(`[migrate] Перенесено ${fileMonitors.length} монитор(ов) из monitors.json в базу данных`);
+  } catch (e) {
+    console.log('[migrate] monitors.json не найден или пуст — начинаем с чистого списка');
+  }
+}
 
 // --- Авторизация ---
 // Простая защита паролем: страница логина + сессия по httpOnly-куке.
@@ -246,6 +271,65 @@ app.post('/api/monitors/:id/check-now', async (req, res) => {
   res.json(result);
 });
 
+// --- Управление мониторами (Этап 9) ---
+// Добавление/редактирование/удаление прямо из UI, без правки monitors.json
+// на GitHub и ожидания редеплоя — изменения сразу пишутся в Turso.
+
+app.get('/api/config/monitors', (req, res) => {
+  res.json(monitors);
+});
+
+function validateMonitorConfig(body) {
+  if (!body || typeof body !== 'object') return 'Пустые данные монитора';
+  if (!body.id || typeof body.id !== 'string' || !/^[a-z0-9-]+$/.test(body.id)) {
+    return 'id обязателен и может содержать только строчные латинские буквы, цифры и дефис';
+  }
+  if (!body.name || typeof body.name !== 'string') return 'name обязателен';
+  if (!['http', 'telegram_bot'].includes(body.type)) return 'type должен быть "http" или "telegram_bot"';
+  if (body.type === 'http' && !body.url) return 'url обязателен для type: "http"';
+  if (body.type === 'telegram_bot' && !body.botToken) return 'botToken обязателен для type: "telegram_bot"';
+  return null;
+}
+
+app.post('/api/config/monitors', async (req, res) => {
+  const error = validateMonitorConfig(req.body);
+  if (error) return res.status(400).json({ error });
+
+  const exists = monitors.find((m) => m.id === req.body.id);
+  if (exists) return res.status(409).json({ error: `Монитор с id "${req.body.id}" уже существует` });
+
+  await upsertMonitorConfig(req.body.id, req.body);
+  await loadMonitorsFromDb();
+  lastRunMap[req.body.id] = 0; // проверим в ближайший тик планировщика
+
+  res.status(201).json({ ok: true });
+});
+
+app.put('/api/config/monitors/:id', async (req, res) => {
+  const existing = monitors.find((m) => m.id === req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Монитор не найден' });
+
+  const merged = { ...existing, ...req.body, id: req.params.id };
+  const error = validateMonitorConfig(merged);
+  if (error) return res.status(400).json({ error });
+
+  await upsertMonitorConfig(req.params.id, merged);
+  await loadMonitorsFromDb();
+
+  res.json({ ok: true });
+});
+
+app.delete('/api/config/monitors/:id', async (req, res) => {
+  const existing = monitors.find((m) => m.id === req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Монитор не найден' });
+
+  await deleteMonitorConfig(req.params.id);
+  await loadMonitorsFromDb();
+  delete lastRunMap[req.params.id];
+
+  res.json({ ok: true });
+});
+
 // --- Планировщик ---
 const lastRunMap = {};
 
@@ -268,6 +352,8 @@ cron.schedule('* * * * *', () => {
 // --- Запуск: сначала инициализируем БД, потом стартуем сервер и проверки ---
 async function start() {
   await initDb();
+  await migrateFromFileIfNeeded();
+  await loadMonitorsFromDb();
 
   for (const m of monitors.filter((x) => x.type !== 'reminder')) {
     lastRunMap[m.id] = Date.now();
