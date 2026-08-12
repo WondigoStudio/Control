@@ -7,7 +7,7 @@ const fs = require('fs');
 const { runCheck } = require('./checker');
 const { diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
-const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary, getRestartLog, saveMultiLocationResult, getMultiLocationResult } = require('./db');
+const { getLastCheck, getHistory, getHistoryAggregated, getUptimePercent, getIncidents, getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary, getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -100,11 +100,31 @@ app.get('/api/monitors/:id/history', (req, res) => {
 app.get('/api/monitors/:id/incidents', (req, res) => {
   const days = parseInt(req.query.days || '7', 10);
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
-  const monitor = monitors.find((m) => m.id === req.params.id);
-  const incidents = getIncidents(req.params.id, since).map((inc) => ({
-    ...inc,
-    diagnosis: diagnose({ error: inc.error, timeoutMs: monitor ? monitor.timeoutMs : null, hosting: monitor ? monitor.hosting : null }),
+
+  const rows = getIncidentsForMonitor(req.params.id, since, 100);
+
+  const incidents = rows.map((inc) => ({
+    id: inc.id,
+    start: inc.started_at,
+    end: inc.ended_at,
+    ongoing: !inc.ended_at,
+    durationMs: (inc.ended_at || Date.now()) - inc.started_at,
+    error: inc.last_error,
+    checksFailed: inc.checks_failed,
+    diagnosis: {
+      category: inc.cause_category || 'UNKNOWN',
+      label: inc.cause_label || 'Неизвестная ошибка',
+      explanation: inc.cause_explanation || inc.last_error || 'Причина не определена',
+      suggestion: inc.cause_suggestion || 'Проверь логи хостинга вручную за это время.',
+    },
+    recovery: {
+      attempted: !!inc.recovery_attempted,
+      provider: inc.recovery_provider,
+      result: inc.recovery_result,
+    },
+    notificationSent: !!inc.notification_sent,
   }));
+
   res.json(incidents);
 });
 
