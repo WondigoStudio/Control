@@ -61,6 +61,8 @@ try { db.exec("ALTER TABLE checks ADD COLUMN timing_breakdown TEXT"); } catch (e
 try { db.exec("ALTER TABLE monitor_state ADD COLUMN consecutive_fails INTEGER DEFAULT 0"); } catch (e) {}
 try { db.exec("ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DEFAULT 0"); } catch (e) {}
 try { db.exec("ALTER TABLE checks ADD COLUMN bot_health TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE monitor_state ADD COLUMN recovery_attempts INTEGER DEFAULT 0"); } catch (e) {}
+try { db.exec("ALTER TABLE monitor_state ADD COLUMN recovery_exhausted_notified INTEGER DEFAULT 0"); } catch (e) {}
 
 function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth) {
   const stmt = db.prepare(`
@@ -235,22 +237,41 @@ function updateMonitorState(monitorId, ok) {
   const newStatus = ok ? 'up' : 'down';
   const consecutiveFails = ok ? 0 : (prev ? (prev.consecutive_fails || 0) : 0) + 1;
   const restartAttempted = ok ? 0 : (prev ? (prev.restart_attempted || 0) : 0);
+  const recoveryAttempts = ok ? 0 : (prev ? (prev.recovery_attempts || 0) : 0);
+  const recoveryExhaustedNotified = ok ? 0 : (prev ? (prev.recovery_exhausted_notified || 0) : 0);
   const statusChanged = prevStatus !== newStatus;
 
   db.prepare(`
-    INSERT INTO monitor_state (monitor_id, last_status, last_change_ts, consecutive_fails, restart_attempted)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO monitor_state (monitor_id, last_status, last_change_ts, consecutive_fails, restart_attempted, recovery_attempts, recovery_exhausted_notified)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(monitor_id) DO UPDATE SET
       last_status = excluded.last_status,
       last_change_ts = ?,
       consecutive_fails = excluded.consecutive_fails,
-      restart_attempted = excluded.restart_attempted
+      restart_attempted = excluded.restart_attempted,
+      recovery_attempts = excluded.recovery_attempts,
+      recovery_exhausted_notified = excluded.recovery_exhausted_notified
   `).run(
-    monitorId, newStatus, Date.now(), consecutiveFails, restartAttempted,
+    monitorId, newStatus, Date.now(), consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified,
     statusChanged ? Date.now() : (prev ? prev.last_change_ts : Date.now())
   );
 
-  return { prevStatus, newStatus, statusChanged, consecutiveFails, restartAttempted };
+  return { prevStatus, newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified };
+}
+
+function incrementRecoveryAttempts(monitorId) {
+  db.prepare(`UPDATE monitor_state SET recovery_attempts = recovery_attempts + 1 WHERE monitor_id = ?`).run(monitorId);
+}
+
+function markRecoveryExhaustedNotified(monitorId) {
+  db.prepare(`UPDATE monitor_state SET recovery_exhausted_notified = 1 WHERE monitor_id = ?`).run(monitorId);
+}
+
+function countRecentRestarts(monitorId, sinceTs) {
+  const row = db.prepare(`
+    SELECT COUNT(*) as cnt FROM restart_log WHERE monitor_id = ? AND ts >= ?
+  `).get(monitorId, sinceTs);
+  return row ? row.cnt : 0;
 }
 
 function markRestartAttempted(monitorId) {
@@ -303,4 +324,7 @@ module.exports = {
   getMonitorSummary,
   saveMultiLocationResult,
   getMultiLocationResult,
+  incrementRecoveryAttempts,
+  markRecoveryExhaustedNotified,
+  countRecentRestarts,
 };
