@@ -104,7 +104,7 @@
         </div>
 
         <div id="recoveryFields" hidden>
-          <div class="form-row">
+          <div class="form-row" id="row_deployHookUrl">
             <label>Deploy Hook URL</label>
             <input type="text" id="f_deployHookUrl" placeholder="https://api.render.com/deploy/...">
           </div>
@@ -122,6 +122,11 @@
           </div>
         </div>
 
+        <div class="form-row">
+          <label>Резервный адрес (Failover, опционально)</label>
+          <input type="text" id="f_backupUrl" placeholder="https://резервный-адрес.example.com">
+        </div>
+
         <div class="form-actions">
           <button type="submit" class="btn-primary">Сохранить</button>
           <button type="button" class="btn-danger" id="deleteMonitorBtn" hidden>Удалить</button>
@@ -135,6 +140,7 @@
     <div class="detail__panel">
       <button class="detail__close" id="detailClose">×</button>
       <button class="sort-btn edit-monitor-btn" id="editMonitorBtn">✏️ редактировать</button>
+      <button class="sort-btn maintenance-btn" id="maintenanceBtn">🔧 обслуживание</button>
       <h2 id="detailTitle">—</h2>
       <div class="detail__row" id="detailMeta"></div>
 
