@@ -81,6 +81,12 @@ async function initDb() {
         recovery_result TEXT,
         notification_sent INTEGER DEFAULT 0
       )`,
+      `CREATE TABLE IF NOT EXISTS monitor_configs (
+        id TEXT PRIMARY KEY,
+        config_json TEXT NOT NULL,
+        created_at INTEGER,
+        updated_at INTEGER
+      )`,
     ],
     'write'
   );
@@ -341,6 +347,33 @@ async function getIncidentsForMonitor(monitorId, sinceTs, limit) {
   return q(`SELECT * FROM incidents WHERE monitor_id = ? AND started_at >= ? ORDER BY started_at DESC LIMIT ?`, [monitorId, sinceTs, limit || 50]);
 }
 
+// --- Конфигурация мониторов (для UI управления, Этап 9) ---
+
+async function getAllMonitorConfigs() {
+  const rows = await q(`SELECT * FROM monitor_configs ORDER BY created_at ASC`);
+  return rows.map((r) => JSON.parse(r.config_json));
+}
+
+async function upsertMonitorConfig(id, configObj) {
+  const now = Date.now();
+  const existing = await qOne(`SELECT created_at FROM monitor_configs WHERE id = ?`, [id]);
+  await run(
+    `INSERT INTO monitor_configs (id, config_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
+    [id, JSON.stringify(configObj), existing ? existing.created_at : now, now]
+  );
+}
+
+async function deleteMonitorConfig(id) {
+  await run(`DELETE FROM monitor_configs WHERE id = ?`, [id]);
+}
+
+async function countMonitorConfigs() {
+  const row = await qOne(`SELECT COUNT(*) as cnt FROM monitor_configs`);
+  return row ? Number(row.cnt) : 0;
+}
+
 module.exports = {
   initDb,
   insertCheck,
@@ -369,4 +402,8 @@ module.exports = {
   markIncidentNotified,
   markIncidentRecovery,
   getIncidentsForMonitor,
+  getAllMonitorConfigs,
+  upsertMonitorConfig,
+  deleteMonitorConfig,
+  countMonitorConfigs,
 };
