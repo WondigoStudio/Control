@@ -74,9 +74,13 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+// Файлы, нужные для отрисовки самой страницы входа — должны быть доступны
+// без авторизации, иначе страница логина останется без стилей.
+const PUBLIC_PATHS = ['/api/login', '/login.html', '/style.css'];
+
 function requireAuth(req, res, next) {
   if (!AUTH_PASSWORD) return next(); // если пароль не настроен — не блокируем (для локальной разработки)
-  if (req.path === '/api/login' || req.path === '/login.html') return next();
+  if (PUBLIC_PATHS.includes(req.path)) return next();
 
   const cookies = parseCookies(req);
   const token = cookies[SESSION_COOKIE];
