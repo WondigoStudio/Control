@@ -446,6 +446,11 @@ function renderIncidents(incidents) {
         <div class="incident-diag">
           <div class="diag-explain">${escapeHtml(inc.diagnosis.explanation)}</div>
           <div class="diag-suggest">💡 ${escapeHtml(inc.diagnosis.suggestion)}</div>
+          <div class="incident-meta">
+            <span>Неудачных проверок: ${inc.checksFailed}</span>
+            ${inc.recovery && inc.recovery.attempted ? `<span>· Восстановление (${escapeHtml(inc.recovery.provider || '?')}): ${inc.recovery.result === 'success' ? '✓ успешно' : '✗ не удалось'}</span>` : ''}
+            ${inc.notificationSent ? '<span>· 📧 уведомление отправлено</span>' : ''}
+          </div>
         </div>
       ` : ''}
     </div>
