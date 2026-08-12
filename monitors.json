@@ -30,10 +30,11 @@
     "id": "windigo-helper",
     "name": "WindigoHelper",
     "type": "http",
-    "url": "https://periproctal-emerald-agrobiologically.ngrok-free.dev/",
+    "url": "http://zara.hidencloud.com:24725/health",
     "intervalSec": 60,
     "timeoutMs": 8000,
     "expectedStatus": 200,
+    "expectedContent": "\"status\": \"ok\"",
     "hosting": "hidden_cloud",
     "recovery": { "provider": "none" }
   }
