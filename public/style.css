@@ -404,6 +404,16 @@ html, body {
   color: var(--accent);
   margin-top: 6px;
 }
+.incident-meta {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--panel-border);
+  color: var(--text-dim);
+  font-size: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 
 .loc-grid {
   display: grid;
