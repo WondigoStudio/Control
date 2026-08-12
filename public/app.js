@@ -4,6 +4,14 @@ const summaryText = document.getElementById('summaryText');
 const clockEl = document.getElementById('clock');
 const sortBtn = document.getElementById('sortBtn');
 
+const logoutBtn = document.getElementById('logoutBtn');
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', async () => {
+    await fetch('/api/logout', { method: 'POST' });
+    window.location.href = '/login.html';
+  });
+}
+
 const detail = document.getElementById('detail');
 const detailTitle = document.getElementById('detailTitle');
 const detailMeta = document.getElementById('detailMeta');
