@@ -1,9 +1,9 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery } = require('./db');
 const { notify } = require('./notifier');
-const { detectSuspensionSignature } = require('./diagnosis');
+const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 
 function checkSSLCert(hostname) {
@@ -180,14 +180,14 @@ function resolveRecovery(monitor) {
   return { provider: 'none', enabled: true, afterFails: 3, deployHookUrl: null, maxAttempts: 0, retryAfterFails: 0, maxPerHour: 0 };
 }
 
-async function runRecovery(monitor, recovery, attemptNumber) {
+async function runRecovery(monitor, recovery, attemptNumber, incidentId) {
   switch (recovery.provider) {
     case 'render':
       if (!recovery.deployHookUrl) {
         console.error(`[Recovery] provider "render" для "${monitor.name}" без deployHookUrl — пропускаю`);
         return;
       }
-      await restartViaRenderHook(monitor, recovery.deployHookUrl, attemptNumber, recovery.maxAttempts);
+      await restartViaRenderHook(monitor, recovery.deployHookUrl, attemptNumber, recovery.maxAttempts, incidentId);
       return;
 
     case 'docker':
@@ -196,7 +196,8 @@ async function runRecovery(monitor, recovery, attemptNumber) {
     case 'custom':
       // Требуют агента на стороне сервера (см. дорожную карту) — пока не реализовано.
       console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается — нужен агент на сервере.`);
-      logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`);
+      logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`, incidentId);
+      markIncidentRecovery(incidentId, recovery.provider, 'not_implemented');
       return;
 
     case 'none':
@@ -207,12 +208,13 @@ async function runRecovery(monitor, recovery, attemptNumber) {
   }
 }
 
-async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAttempts) {
+async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAttempts, incidentId) {
   const attemptLabel = attemptNumber && maxAttempts ? ` (попытка ${attemptNumber}/${maxAttempts})` : '';
   try {
     const res = await fetch(deployHookUrl, { method: 'POST' });
     const ok = res.ok;
-    logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`);
+    logRestartAttempt(monitor.id, ok, ok ? null : `HTTP ${res.status}`, incidentId);
+    markIncidentRecovery(incidentId, 'render', ok ? 'success' : 'failed');
     await notify(
       ok ? `🔁 Автоперезапуск${attemptLabel}: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
       ok
@@ -220,7 +222,8 @@ async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAt
         : `Попытка автоперезапуска "${monitor.name}"${attemptLabel} не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
     );
   } catch (e) {
-    logRestartAttempt(monitor.id, false, e.message);
+    logRestartAttempt(monitor.id, false, e.message, incidentId);
+    markIncidentRecovery(incidentId, 'render', 'failed');
     await notify(
       `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
       `Попытка автоперезапуска "${monitor.name}"${attemptLabel} завершилась ошибкой: ${e.message}`
@@ -247,12 +250,30 @@ async function runCheck(monitor) {
   const prevState = getState(monitor.id);
   const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = updateMonitorState(monitor.id, result.ok);
 
+  // --- Incident lifecycle ---
+  // Одна запись на всё падение целиком: открывается при первом переходе
+  // в "down", обновляется на каждой последующей неудачной проверке,
+  // закрывается при восстановлении. recovery-попытки привязываются к ней.
+  let currentIncidentId = null;
+  if (newStatus === 'down') {
+    if (statusChanged) {
+      const d = diagnose({ error: result.error, statusCode: result.statusCode, responseMs: result.responseMs, timeoutMs: monitor.timeoutMs, hosting: monitor.hosting });
+      currentIncidentId = openIncident(monitor.id, Date.now(), d.category, d.label, d.explanation, d.suggestion, result.error);
+    } else {
+      currentIncidentId = prevState ? prevState.current_incident_id : null;
+      incrementIncidentChecks(currentIncidentId, result.error);
+    }
+  } else if (statusChanged && prevState && prevState.current_incident_id) {
+    closeIncident(monitor.id, prevState.current_incident_id, Date.now());
+  }
+
   if (statusChanged && prevState) {
     if (newStatus === 'down') {
       await notify(
         `🔴 ${monitor.name} недоступен`,
         `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
       );
+      markIncidentNotified(currentIncidentId);
     } else {
       await notify(
         `🟢 ${monitor.name} снова доступен`,
@@ -287,7 +308,7 @@ async function runCheck(monitor) {
           }
         } else {
           incrementRecoveryAttempts(monitor.id);
-          runRecovery(monitor, recovery, attemptsSoFar + 1).catch(() => {});
+          runRecovery(monitor, recovery, attemptsSoFar + 1, currentIncidentId).catch(() => {});
         }
       }
     } else if (!recoveryExhaustedNotified && consecutiveFails > recovery.afterFails + (recovery.maxAttempts - 1) * recovery.retryAfterFails) {
