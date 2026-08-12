@@ -637,26 +637,53 @@ function renderIncidents(incidents) {
     detailIncidents.innerHTML = '<div class="empty">Падений не зафиксировано за этот период</div>';
     return;
   }
-  detailIncidents.innerHTML = incidents.map((inc) => `
-    <div class="incident-block ${inc.ongoing ? 'ongoing' : ''}">
-      <div class="incident">
-        <span>${fmtTime(inc.start)}</span>
-        <span class="err">${inc.diagnosis ? categoryIcon(inc.diagnosis.category) + ' ' + escapeHtml(inc.diagnosis.label) : escapeHtml(inc.error || 'ошибка')}</span>
-        <span class="dur">${fmtDuration(inc.durationMs)}</span>
+  detailIncidents.innerHTML = incidents.map((inc) => {
+    const statusLabel = inc.ongoing ? 'ONGOING' : 'RECOVERED';
+    const statusClass = inc.ongoing ? 'inc-status-ongoing' : 'inc-status-recovered';
+
+    let recoveryResultLabel = '—';
+    let recoveryResultClass = '';
+    if (inc.recovery && inc.recovery.attempted) {
+      if (inc.recovery.result === 'success') { recoveryResultLabel = 'SUCCESS'; recoveryResultClass = 'inc-result-success'; }
+      else if (inc.recovery.result === 'not_implemented') { recoveryResultLabel = 'NOT IMPLEMENTED'; recoveryResultClass = 'inc-result-warn'; }
+      else { recoveryResultLabel = 'FAILED'; recoveryResultClass = 'inc-result-fail'; }
+    }
+
+    const recoveryProviderLabel = inc.recovery && inc.recovery.attempted
+      ? (inc.recovery.provider === 'render' ? 'Render Deploy Hook' : (inc.recovery.provider || '—'))
+      : 'не запускалось';
+
+    return `
+    <div class="incident-card ${inc.ongoing ? 'ongoing' : ''}">
+      <div class="inc-header">
+        <span class="inc-id">Incident #${inc.id}</span>
+        <span class="inc-status ${statusClass}">${statusLabel}</span>
       </div>
+
+      <div class="inc-grid">
+        <div class="inc-field"><span class="inc-label">Started</span><span class="inc-value">${fmtTime(inc.start)}</span></div>
+        <div class="inc-field"><span class="inc-label">Duration</span><span class="inc-value">${fmtDuration(inc.durationMs)}</span></div>
+
+        <div class="inc-field"><span class="inc-label">Cause</span><span class="inc-value">${inc.diagnosis ? categoryIcon(inc.diagnosis.category) + ' ' + inc.diagnosis.category : 'UNKNOWN'}</span></div>
+        <div class="inc-field"><span class="inc-label">Checks failed</span><span class="inc-value">${inc.checksFailed}</span></div>
+
+        <div class="inc-field inc-field-wide"><span class="inc-label">Diagnosis</span><span class="inc-value">${inc.diagnosis ? escapeHtml(inc.diagnosis.label) : '—'}</span></div>
+
+        <div class="inc-field"><span class="inc-label">Recovery</span><span class="inc-value">${escapeHtml(recoveryProviderLabel)}</span></div>
+        <div class="inc-field"><span class="inc-label">Result</span><span class="inc-value ${recoveryResultClass}">${recoveryResultLabel}</span></div>
+
+        <div class="inc-field inc-field-wide"><span class="inc-label">Notification</span><span class="inc-value">${inc.notificationSent ? '📧 Email sent' : '— not sent'}</span></div>
+      </div>
+
       ${inc.diagnosis ? `
         <div class="incident-diag">
           <div class="diag-explain">${escapeHtml(inc.diagnosis.explanation)}</div>
           <div class="diag-suggest">💡 ${escapeHtml(inc.diagnosis.suggestion)}</div>
-          <div class="incident-meta">
-            <span>Неудачных проверок: ${inc.checksFailed}</span>
-            ${inc.recovery && inc.recovery.attempted ? `<span>· Восстановление (${escapeHtml(inc.recovery.provider || '?')}): ${inc.recovery.result === 'success' ? '✓ успешно' : '✗ не удалось'}</span>` : ''}
-            ${inc.notificationSent ? '<span>· 📧 уведомление отправлено</span>' : ''}
-          </div>
         </div>
       ` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function drawChart(history) {
