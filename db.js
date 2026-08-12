@@ -52,6 +52,24 @@ CREATE TABLE IF NOT EXISTS multi_location_results (
   ts INTEGER NOT NULL,
   results_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS incidents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  monitor_id TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  status TEXT NOT NULL DEFAULT 'ongoing',
+  cause_category TEXT,
+  cause_label TEXT,
+  cause_explanation TEXT,
+  cause_suggestion TEXT,
+  last_error TEXT,
+  checks_failed INTEGER DEFAULT 1,
+  recovery_attempted INTEGER DEFAULT 0,
+  recovery_provider TEXT,
+  recovery_result TEXT,
+  notification_sent INTEGER DEFAULT 0
+);
 `);
 
 // Миграция: добавляем новые колонки в уже существующие БД без пересоздания таблицы
@@ -63,6 +81,10 @@ try { db.exec("ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DE
 try { db.exec("ALTER TABLE checks ADD COLUMN bot_health TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE monitor_state ADD COLUMN recovery_attempts INTEGER DEFAULT 0"); } catch (e) {}
 try { db.exec("ALTER TABLE monitor_state ADD COLUMN recovery_exhausted_notified INTEGER DEFAULT 0"); } catch (e) {}
+try { db.exec("ALTER TABLE monitor_state ADD COLUMN current_incident_id INTEGER"); } catch (e) {}
+try { db.exec("ALTER TABLE restart_log ADD COLUMN incident_id INTEGER"); } catch (e) {}
+try { db.exec("ALTER TABLE incidents ADD COLUMN cause_explanation TEXT"); } catch (e) {}
+try { db.exec("ALTER TABLE incidents ADD COLUMN cause_suggestion TEXT"); } catch (e) {}
 
 function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth) {
   const stmt = db.prepare(`
@@ -274,14 +296,55 @@ function countRecentRestarts(monitorId, sinceTs) {
   return row ? row.cnt : 0;
 }
 
+// --- Incident lifecycle ---
+// Единая запись на каждое падение: от момента открытия до закрытия,
+// с привязанной причиной, количеством неудачных проверок, попыткой
+// восстановления и её результатом, статусом уведомления.
+
+function openIncident(monitorId, startedAt, causeCategory, causeLabel, causeExplanation, causeSuggestion, error) {
+  const info = db.prepare(`
+    INSERT INTO incidents (monitor_id, started_at, status, cause_category, cause_label, cause_explanation, cause_suggestion, last_error, checks_failed)
+    VALUES (?, ?, 'ongoing', ?, ?, ?, ?, ?, 1)
+  `).run(monitorId, startedAt, causeCategory ?? null, causeLabel ?? null, causeExplanation ?? null, causeSuggestion ?? null, error ?? null);
+  db.prepare(`UPDATE monitor_state SET current_incident_id = ? WHERE monitor_id = ?`).run(info.lastInsertRowid, monitorId);
+  return info.lastInsertRowid;
+}
+
+function incrementIncidentChecks(incidentId, error) {
+  if (!incidentId) return;
+  db.prepare(`UPDATE incidents SET checks_failed = checks_failed + 1, last_error = ? WHERE id = ?`).run(error ?? null, incidentId);
+}
+
+function closeIncident(monitorId, incidentId, endedAt) {
+  if (!incidentId) return;
+  db.prepare(`UPDATE incidents SET status = 'recovered', ended_at = ? WHERE id = ?`).run(endedAt, incidentId);
+  db.prepare(`UPDATE monitor_state SET current_incident_id = NULL WHERE monitor_id = ?`).run(monitorId);
+}
+
+function markIncidentNotified(incidentId) {
+  if (!incidentId) return;
+  db.prepare(`UPDATE incidents SET notification_sent = 1 WHERE id = ?`).run(incidentId);
+}
+
+function markIncidentRecovery(incidentId, provider, result) {
+  if (!incidentId) return;
+  db.prepare(`UPDATE incidents SET recovery_attempted = 1, recovery_provider = ?, recovery_result = ? WHERE id = ?`).run(provider, result, incidentId);
+}
+
+function getIncidentsForMonitor(monitorId, sinceTs, limit) {
+  return db.prepare(`
+    SELECT * FROM incidents WHERE monitor_id = ? AND started_at >= ? ORDER BY started_at DESC LIMIT ?
+  `).all(monitorId, sinceTs, limit || 50);
+}
+
 function markRestartAttempted(monitorId) {
   db.prepare(`UPDATE monitor_state SET restart_attempted = 1 WHERE monitor_id = ?`).run(monitorId);
 }
 
-function logRestartAttempt(monitorId, success, error) {
+function logRestartAttempt(monitorId, success, error, incidentId) {
   db.prepare(`
-    INSERT INTO restart_log (monitor_id, ts, success, error) VALUES (?, ?, ?, ?)
-  `).run(monitorId, Date.now(), success ? 1 : 0, error ?? null);
+    INSERT INTO restart_log (monitor_id, ts, success, error, incident_id) VALUES (?, ?, ?, ?, ?)
+  `).run(monitorId, Date.now(), success ? 1 : 0, error ?? null, incidentId ?? null);
 }
 
 function getRestartLog(monitorId, limit) {
@@ -327,4 +390,10 @@ module.exports = {
   incrementRecoveryAttempts,
   markRecoveryExhaustedNotified,
   countRecentRestarts,
+  openIncident,
+  incrementIncidentChecks,
+  closeIncident,
+  markIncidentNotified,
+  markIncidentRecovery,
+  getIncidentsForMonitor,
 };
