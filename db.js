@@ -60,17 +60,19 @@ try { db.exec("ALTER TABLE checks ADD COLUMN content_ok INTEGER"); } catch (e) {
 try { db.exec("ALTER TABLE checks ADD COLUMN timing_breakdown TEXT"); } catch (e) {}
 try { db.exec("ALTER TABLE monitor_state ADD COLUMN consecutive_fails INTEGER DEFAULT 0"); } catch (e) {}
 try { db.exec("ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DEFAULT 0"); } catch (e) {}
+try { db.exec("ALTER TABLE checks ADD COLUMN bot_health TEXT"); } catch (e) {}
 
-function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing) {
+function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth) {
   const stmt = db.prepare(`
-    INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok, timing_breakdown)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok, timing_breakdown, bot_health)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     monitorId, Date.now(), ok ? 1 : 0, responseMs ?? null, statusCode ?? null, error ?? null,
     responseHeaders ? JSON.stringify(responseHeaders) : null,
     contentOk === undefined || contentOk === null ? null : (contentOk ? 1 : 0),
-    timing ? JSON.stringify(timing) : null
+    timing ? JSON.stringify(timing) : null,
+    botHealth ? JSON.stringify(botHealth) : null
   );
 }
 
