@@ -19,6 +19,7 @@
       <span class="divider">/</span>
       <span id="summaryText">загрузка…</span>
       <button class="sort-btn" id="sortBtn">по надёжности</button>
+      <button class="sort-btn" id="addMonitorBtn">+ добавить</button>
       <button class="sort-btn" id="logoutBtn">выйти</button>
     </div>
   </header>
@@ -29,9 +30,111 @@
     <!-- карточки мониторов рендерятся сюда -->
   </main>
 
+  <div class="detail" id="monitorFormModal" hidden>
+    <div class="detail__panel">
+      <button class="detail__close" id="monitorFormClose">×</button>
+      <h2 id="monitorFormTitle">Новый монитор</h2>
+
+      <form id="monitorForm">
+        <div class="form-row">
+          <label>Название</label>
+          <input type="text" id="f_name" required placeholder="Мой сайт">
+        </div>
+
+        <div class="form-row">
+          <label>ID (латиница, цифры, дефис)</label>
+          <input type="text" id="f_id" required placeholder="my-site" pattern="[a-z0-9-]+">
+        </div>
+
+        <div class="form-row">
+          <label>Тип</label>
+          <select id="f_type">
+            <option value="http">Сайт (HTTP)</option>
+            <option value="telegram_bot">Telegram-бот</option>
+          </select>
+        </div>
+
+        <div class="form-row" id="row_url">
+          <label>URL</label>
+          <input type="text" id="f_url" placeholder="https://example.com">
+        </div>
+
+        <div class="form-row" id="row_botToken" hidden>
+          <label>Токен бота</label>
+          <input type="text" id="f_botToken" placeholder="123456:AAH...">
+        </div>
+
+        <div class="form-row">
+          <label>Интервал проверки (сек)</label>
+          <input type="number" id="f_intervalSec" value="60" min="10">
+        </div>
+
+        <div class="form-row">
+          <label>Таймаут (мс)</label>
+          <input type="number" id="f_timeoutMs" value="8000" min="1000">
+        </div>
+
+        <div class="form-row" id="row_expectedStatus">
+          <label>Ожидаемый HTTP-статус</label>
+          <input type="number" id="f_expectedStatus" value="200">
+        </div>
+
+        <div class="form-row" id="row_expectedContent">
+          <label>Ожидаемый текст на странице (опционально)</label>
+          <input type="text" id="f_expectedContent" placeholder="">
+        </div>
+
+        <div class="form-row">
+          <label>Хостинг</label>
+          <select id="f_hosting">
+            <option value="other">Другой / не указан</option>
+            <option value="render">Render</option>
+            <option value="infinityfree">InfinityFree</option>
+            <option value="hidden_cloud">Hidden Cloud</option>
+            <option value="vps">VPS</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <label>Автовосстановление</label>
+          <select id="f_recoveryProvider">
+            <option value="none">Нет (только диагностика)</option>
+            <option value="render">Render Deploy Hook</option>
+          </select>
+        </div>
+
+        <div id="recoveryFields" hidden>
+          <div class="form-row">
+            <label>Deploy Hook URL</label>
+            <input type="text" id="f_deployHookUrl" placeholder="https://api.render.com/deploy/...">
+          </div>
+          <div class="form-row">
+            <label>Перезапуск после N падений подряд</label>
+            <input type="number" id="f_afterFails" value="3" min="1">
+          </div>
+          <div class="form-row">
+            <label>Макс. попыток за одно падение</label>
+            <input type="number" id="f_maxAttempts" value="2" min="1">
+          </div>
+          <div class="form-row">
+            <label>Макс. перезапусков в час</label>
+            <input type="number" id="f_maxPerHour" value="5" min="1">
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Сохранить</button>
+          <button type="button" class="btn-danger" id="deleteMonitorBtn" hidden>Удалить</button>
+        </div>
+        <div class="form-error" id="formError"></div>
+      </form>
+    </div>
+  </div>
+
   <div class="detail" id="detail" hidden>
     <div class="detail__panel">
       <button class="detail__close" id="detailClose">×</button>
+      <button class="sort-btn edit-monitor-btn" id="editMonitorBtn">✏️ редактировать</button>
       <h2 id="detailTitle">—</h2>
       <div class="detail__row" id="detailMeta"></div>
 
