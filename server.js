@@ -3,6 +3,7 @@ const express = require('express');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const { runCheck } = require('./checker');
 const { diagnose } = require('./diagnosis');
@@ -19,8 +20,77 @@ const PORT = process.env.PORT || 3000;
 
 const monitors = JSON.parse(fs.readFileSync(path.join(__dirname, 'monitors.json'), 'utf-8'));
 
-app.use(express.static(path.join(__dirname, 'public')));
+// --- Авторизация ---
+// Простая защита паролем: страница логина + сессия по httpOnly-куке.
+// Пароль сравнивается через timingSafeEqual, чтобы не утекала информация
+// о совпадении по времени ответа.
+const AUTH_PASSWORD = process.env.AUTH_PASSWORD || null;
+const SESSION_COOKIE = 'monitor_session';
+const activeSessions = new Set(); // в памяти — сбрасывается при рестарте, это ок для личного дашборда
+
+function safeCompare(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    // всё равно делаем сравнение фиксированной длины, чтобы не палить длину пароля по времени
+    crypto.timingSafeEqual(Buffer.alloc(64), Buffer.alloc(64));
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  return Object.fromEntries(
+    header.split(';').map((c) => {
+      const [k, ...v] = c.trim().split('=');
+      return [k, decodeURIComponent(v.join('='))];
+    })
+  );
+}
+
 app.use(express.json());
+
+app.post('/api/login', (req, res) => {
+  if (!AUTH_PASSWORD) {
+    return res.status(500).json({ error: 'AUTH_PASSWORD не настроен на сервере' });
+  }
+  const { password } = req.body || {};
+  if (typeof password !== 'string' || !safeCompare(password, AUTH_PASSWORD)) {
+    return res.status(401).json({ error: 'Неверный пароль' });
+  }
+  const token = crypto.randomBytes(48).toString('hex');
+  activeSessions.add(token);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax`);
+  res.json({ ok: true });
+});
+
+app.post('/api/logout', (req, res) => {
+  const cookies = parseCookies(req);
+  const token = cookies[SESSION_COOKIE];
+  if (token) activeSessions.delete(token);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Path=/; Max-Age=0`);
+  res.json({ ok: true });
+});
+
+function requireAuth(req, res, next) {
+  if (!AUTH_PASSWORD) return next(); // если пароль не настроен — не блокируем (для локальной разработки)
+  if (req.path === '/api/login' || req.path === '/login.html') return next();
+
+  const cookies = parseCookies(req);
+  const token = cookies[SESSION_COOKIE];
+  if (token && activeSessions.has(token)) return next();
+
+  if (req.path.startsWith('/api/')) {
+    return res.status(401).json({ error: 'Требуется авторизация' });
+  }
+  return res.redirect('/login.html');
+}
+
+app.use(requireAuth);
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 // --- API ---
 
