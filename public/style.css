@@ -517,3 +517,42 @@ html, body {
 .timing-item i.seg-tls { background: #f2b544; }
 .timing-item i.seg-server { background: #35c48c; }
 .timing-item i.seg-download { background: #d85a30; }
+
+/* Кастомные скроллбары под тёмную тему — вместо стандартных системных */
+.detail__panel,
+.detail__log,
+.incidents,
+#detailRestarts {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: #3a4046 var(--panel); /* Firefox */
+}
+
+.detail__panel::-webkit-scrollbar,
+.detail__log::-webkit-scrollbar,
+.incidents::-webkit-scrollbar,
+#detailRestarts::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.detail__panel::-webkit-scrollbar-track,
+.detail__log::-webkit-scrollbar-track,
+.incidents::-webkit-scrollbar-track,
+#detailRestarts::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+
+.detail__panel::-webkit-scrollbar-thumb,
+.detail__log::-webkit-scrollbar-thumb,
+.incidents::-webkit-scrollbar-thumb,
+#detailRestarts::-webkit-scrollbar-thumb {
+  background: #3a4046;
+  border-radius: 4px;
+}
+
+.detail__panel::-webkit-scrollbar-thumb:hover,
+.detail__log::-webkit-scrollbar-thumb:hover,
+.incidents::-webkit-scrollbar-thumb:hover,
+#detailRestarts::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
