@@ -227,8 +227,25 @@ async function runCheck(monitor) {
     runSSLCheck(monitor).catch(() => {});
   }
 
+  // --- Maintenance Mode ---
+  // Если монитор в обслуживании — проверка всё равно выполняется и пишется
+  // в историю (для целостности графиков), но инциденты, уведомления и
+  // автовосстановление не запускаются. Это специально для ситуации
+  // "сам делаю деплой → не хочу, чтобы мониторинг мешал перезапусками".
+  // Срок истёк сам по себе учитывается на лету — отдельно снимать флаг
+  // в БД не нужно, при следующем открытии UI он уже посчитается как выключенный.
+  const inMaintenance = !!(
+    monitor.maintenance &&
+    monitor.maintenance.enabled &&
+    (!monitor.maintenance.until || Date.now() < monitor.maintenance.until)
+  );
+
   const prevState = await getState(monitor.id);
   const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = await updateMonitorState(monitor.id, result.ok);
+
+  if (inMaintenance) {
+    return result;
+  }
 
   // Диагноз считаем один раз на каждую проверку в статусе "down" — используется
   // и для инцидента, и для решения, стоит ли вообще пытаться восстановить.
