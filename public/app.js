@@ -251,9 +251,29 @@ async function loadDetail(m) {
   renderSSL(m.ssl);
   renderTiming(history);
   renderRestarts(restarts);
+  renderBotHealth(history);
 
   const cachedLocations = await fetch(`/api/monitors/${m.id}/locations`).then((r) => r.json());
   renderLocations(cachedLocations);
+}
+
+function renderBotHealth(history) {
+  const box = document.getElementById('botHealthBox');
+  const withHealth = [...history].reverse().find((h) => h.bot_health);
+  if (!withHealth) {
+    box.hidden = true;
+    return;
+  }
+  let health;
+  try {
+    health = JSON.parse(withHealth.bot_health);
+  } catch (e) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const uptimeStr = health.uptimeSec !== null ? fmtDuration(health.uptimeSec * 1000) : '—';
+  box.innerHTML = `🤖 Health-эндпоинт бота: процесс жив, аптайм процесса ${uptimeStr}${health.version ? `, версия ${escapeHtml(health.version)}` : ''}`;
 }
 
 function renderLocations(data) {
