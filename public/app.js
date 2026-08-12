@@ -12,6 +12,157 @@ if (logoutBtn) {
   });
 }
 
+// --- Управление мониторами (Этап 9) ---
+
+const monitorFormModal = document.getElementById('monitorFormModal');
+const monitorForm = document.getElementById('monitorForm');
+const monitorFormTitle = document.getElementById('monitorFormTitle');
+const formError = document.getElementById('formError');
+const deleteMonitorBtn = document.getElementById('deleteMonitorBtn');
+let editingMonitorId = null; // null = создаём новый
+
+document.getElementById('addMonitorBtn').addEventListener('click', () => openMonitorForm(null));
+document.getElementById('monitorFormClose').addEventListener('click', closeMonitorForm);
+monitorFormModal.addEventListener('click', (e) => { if (e.target === monitorFormModal) closeMonitorForm(); });
+
+document.getElementById('f_type').addEventListener('change', updateFormFieldsVisibility);
+document.getElementById('f_recoveryProvider').addEventListener('change', updateFormFieldsVisibility);
+
+function updateFormFieldsVisibility() {
+  const type = document.getElementById('f_type').value;
+  document.getElementById('row_url').hidden = type !== 'http';
+  document.getElementById('row_botToken').hidden = type !== 'telegram_bot';
+  document.getElementById('row_expectedStatus').hidden = type !== 'http';
+  document.getElementById('row_expectedContent').hidden = type !== 'http';
+
+  const provider = document.getElementById('f_recoveryProvider').value;
+  document.getElementById('recoveryFields').hidden = provider === 'none';
+}
+
+async function openMonitorForm(monitor) {
+  formError.textContent = '';
+  editingMonitorId = monitor ? monitor.id : null;
+  monitorFormTitle.textContent = monitor ? `Редактировать: ${monitor.name}` : 'Новый монитор';
+  deleteMonitorBtn.hidden = !monitor;
+
+  document.getElementById('f_id').value = monitor ? monitor.id : '';
+  document.getElementById('f_id').disabled = !!monitor; // id менять нельзя после создания
+  document.getElementById('f_name').value = monitor ? monitor.name : '';
+  document.getElementById('f_type').value = monitor ? monitor.type : 'http';
+  document.getElementById('f_url').value = monitor && monitor.url ? monitor.url : '';
+  document.getElementById('f_botToken').value = monitor && monitor.botToken ? monitor.botToken : '';
+  document.getElementById('f_intervalSec').value = monitor && monitor.intervalSec ? monitor.intervalSec : 60;
+  document.getElementById('f_timeoutMs').value = monitor && monitor.timeoutMs ? monitor.timeoutMs : 8000;
+  document.getElementById('f_expectedStatus').value = monitor && monitor.expectedStatus ? monitor.expectedStatus : 200;
+  document.getElementById('f_expectedContent').value = monitor && monitor.expectedContent ? monitor.expectedContent : '';
+  document.getElementById('f_hosting').value = monitor && monitor.hosting ? monitor.hosting : 'other';
+
+  const recovery = monitor && monitor.recovery ? monitor.recovery : (monitor && monitor.deployHookUrl ? { provider: 'render', deployHookUrl: monitor.deployHookUrl, afterFails: monitor.restartAfterFails } : null);
+  document.getElementById('f_recoveryProvider').value = recovery ? recovery.provider : 'none';
+  document.getElementById('f_deployHookUrl').value = recovery && recovery.deployHookUrl ? recovery.deployHookUrl : '';
+  document.getElementById('f_afterFails').value = recovery && recovery.afterFails ? recovery.afterFails : 3;
+  document.getElementById('f_maxAttempts').value = recovery && recovery.maxAttempts ? recovery.maxAttempts : 2;
+  document.getElementById('f_maxPerHour').value = recovery && recovery.maxPerHour ? recovery.maxPerHour : 5;
+
+  updateFormFieldsVisibility();
+  monitorFormModal.hidden = false;
+}
+
+function closeMonitorForm() {
+  monitorFormModal.hidden = true;
+}
+
+function buildMonitorPayload() {
+  const type = document.getElementById('f_type').value;
+  const payload = {
+    id: document.getElementById('f_id').value.trim(),
+    name: document.getElementById('f_name').value.trim(),
+    type,
+    intervalSec: parseInt(document.getElementById('f_intervalSec').value, 10) || 60,
+    timeoutMs: parseInt(document.getElementById('f_timeoutMs').value, 10) || 8000,
+    hosting: document.getElementById('f_hosting').value,
+  };
+
+  if (type === 'http') {
+    payload.url = document.getElementById('f_url').value.trim();
+    payload.expectedStatus = parseInt(document.getElementById('f_expectedStatus').value, 10) || 200;
+    const expectedContent = document.getElementById('f_expectedContent').value.trim();
+    if (expectedContent) payload.expectedContent = expectedContent;
+  } else {
+    payload.botToken = document.getElementById('f_botToken').value.trim();
+  }
+
+  const recoveryProvider = document.getElementById('f_recoveryProvider').value;
+  if (recoveryProvider !== 'none') {
+    payload.recovery = {
+      provider: recoveryProvider,
+      enabled: true,
+      deployHookUrl: document.getElementById('f_deployHookUrl').value.trim(),
+      afterFails: parseInt(document.getElementById('f_afterFails').value, 10) || 3,
+      maxAttempts: parseInt(document.getElementById('f_maxAttempts').value, 10) || 2,
+      retryAfterFails: 10,
+      maxPerHour: parseInt(document.getElementById('f_maxPerHour').value, 10) || 5,
+    };
+  } else {
+    payload.recovery = { provider: 'none' };
+  }
+
+  return payload;
+}
+
+monitorForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  formError.textContent = '';
+  const payload = buildMonitorPayload();
+
+  try {
+    const res = await fetch(
+      editingMonitorId ? `/api/config/monitors/${editingMonitorId}` : '/api/config/monitors',
+      {
+        method: editingMonitorId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      formError.textContent = data.error || 'Не удалось сохранить';
+      return;
+    }
+    closeMonitorForm();
+    loadMonitors();
+  } catch (err) {
+    formError.textContent = 'Ошибка соединения: ' + err.message;
+  }
+});
+
+deleteMonitorBtn.addEventListener('click', async () => {
+  if (!editingMonitorId) return;
+  if (!confirm(`Удалить монитор "${document.getElementById('f_name').value}"? Это действие необратимо.`)) return;
+
+  try {
+    const res = await fetch(`/api/config/monitors/${editingMonitorId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) {
+      formError.textContent = data.error || 'Не удалось удалить';
+      return;
+    }
+    closeMonitorForm();
+    closeDetail();
+    loadMonitors();
+  } catch (err) {
+    formError.textContent = 'Ошибка соединения: ' + err.message;
+  }
+});
+
+document.getElementById('editMonitorBtn').addEventListener('click', async () => {
+  if (!currentMonitor) return;
+  const res = await fetch('/api/config/monitors');
+  const configs = await res.json();
+  const fullConfig = configs.find((c) => c.id === currentMonitor.id);
+  if (fullConfig) openMonitorForm(fullConfig);
+});
+
 const detail = document.getElementById('detail');
 const detailTitle = document.getElementById('detailTitle');
 const detailMeta = document.getElementById('detailMeta');
