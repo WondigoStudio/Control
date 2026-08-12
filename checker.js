@@ -172,50 +172,18 @@ async function runRecovery(monitor, recovery, attemptNumber, incidentId) {
 
     case 'pm2':
     case 'systemd':
-      if (!recovery.agentUrl || !recovery.agentApiKey || !recovery.serviceName) {
-        console.error(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" требует agentUrl, agentApiKey и serviceName — пропускаю`);
-        return;
-      }
-      await restartViaAgent(monitor, recovery, attemptNumber, incidentId);
-      return;
-
     case 'docker':
     case 'custom':
-      console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается.`);
-      await logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet`, incidentId);
+      // VPS Agent пока не развёрнут — эти провайдеры честно заглушки,
+      // ничего не перезапускают, только фиксируют попытку.
+      console.log(`[Recovery] provider "${recovery.provider}" для "${monitor.name}" ещё не поддерживается (VPS Agent не подключён).`);
+      await logRestartAttempt(monitor.id, false, `Provider "${recovery.provider}" not implemented yet (VPS Agent not connected)`, incidentId);
       await markIncidentRecovery(incidentId, recovery.provider, 'not_implemented');
       return;
 
     case 'none':
     default:
       return;
-  }
-}
-
-async function restartViaAgent(monitor, recovery, attemptNumber, incidentId) {
-  const attemptLabel = attemptNumber && recovery.maxAttempts ? ` (попытка ${attemptNumber}/${recovery.maxAttempts})` : '';
-  try {
-    const res = await fetch(`${recovery.agentUrl}/restart/${recovery.serviceName}`, {
-      method: 'POST',
-      headers: { 'X-Agent-Key': recovery.agentApiKey },
-    });
-    const data = await res.json();
-    const ok = res.ok && data.ok;
-    await logRestartAttempt(monitor.id, ok, ok ? null : (data.error || `HTTP ${res.status}`), incidentId);
-    await markIncidentRecovery(incidentId, recovery.provider, ok ? 'success' : 'failed');
-    await notify(
-      ok ? `🔁 Автоперезапуск${attemptLabel}: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
-      ok
-        ? `Монитор "${monitor.name}" упал несколько проверок подряд. VPS Agent перезапустил процесс "${recovery.serviceName}"${attemptLabel}.\nВремя: ${new Date().toLocaleString('ru-RU')}`
-        : `Попытка перезапуска "${monitor.name}"${attemptLabel} через VPS Agent не удалась: ${data.error || res.status}.\nПроверь агент вручную на VPS.`
-    );
-  } catch (e) {
-    await logRestartAttempt(monitor.id, false, e.message, incidentId);
-    await markIncidentRecovery(incidentId, recovery.provider, 'failed');
-    await notify(
-      `⚠️ Не удалось связаться с VPS Agent для ${monitor.name}${attemptLabel}`,
-      `Попытка перезапуска "${monitor.name}"${attemptLabel} завершилась ошибкой: ${e.message}\nПроверь, что VPS Agent запущен и доступен по сети.`
-    );
   }
 }
 
