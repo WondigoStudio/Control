@@ -8,12 +8,14 @@ const crypto = require('crypto');
 const { runCheck } = require('./checker');
 const { diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
+const { checkTrend } = require('./trendDetection');
 const {
   initDb,
   getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
   getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary,
   getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
   getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
+  getState,
 } = require('./db');
 
 const app = express();
@@ -362,6 +364,22 @@ cron.schedule('* * * * *', () => {
       } catch (e) {
         console.error(`Ошибка проверки ${m.id}:`, e.message);
       }
+    }
+  });
+});
+
+// --- Predictive Failure Detection ---
+// Отдельный, более редкий цикл: сравнивать почасовые окна имеет смысл не
+// каждую минуту (шумно и дорого по чтению истории), а раз в 15 минут —
+// тренд за 4 часа физически не может измениться за минуту.
+cron.schedule('*/15 * * * *', () => {
+  monitors.filter((m) => m.type === 'http').forEach(async (m) => {
+    try {
+      const state = await getState(m.id);
+      const currentStatus = state ? state.last_status : 'unknown';
+      await checkTrend(m, currentStatus);
+    } catch (e) {
+      console.error(`Ошибка проверки тренда ${m.id}:`, e.message);
     }
   });
 });
