@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes } = require('./db');
 const { notify } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
@@ -109,6 +109,8 @@ async function checkHttp(monitor) {
     else if (!statusOk) error = `Unexpected status ${res.statusCode}`;
     else if (contentOk === false) error = `Ожидаемый текст "${monitor.expectedContent}" не найден на странице`;
 
+    const responseSize = res.body ? Buffer.byteLength(res.body, 'utf-8') : null;
+
     return {
       ok,
       responseMs,
@@ -122,6 +124,7 @@ async function checkHttp(monitor) {
       contentOk,
       timing: res.timing,
       botHealth,
+      responseSize,
     };
   } catch (e) {
     return { ok: false, responseMs: Date.now() - start, statusCode: null, error: e.message, headers: null, contentOk: null, timing: null, botHealth: null };
@@ -236,7 +239,28 @@ async function runCheck(monitor) {
     result = await checkHttp(monitor);
   }
 
-  await insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing, result.botHealth);
+  // --- Response Size Anomaly ---
+  // Информационная метка, НЕ влияет на статус up/down — сознательное решение,
+  // чтобы не трогать бинарную модель успех/падение лишний раз. Сравниваем
+  // размер тела ответа с диапазоном по последним УСПЕШНЫМ проверкам.
+  // Нужна минимальная история (10 успешных проверок), иначе на свежем
+  // мониторе первая же проверка считалась бы "аномалией" сама с собой.
+  let sizeAnomaly = false;
+  if (result.ok && result.responseSize !== null && result.responseSize !== undefined) {
+    const recentSizes = await getRecentResponseSizes(monitor.id, 30);
+    if (recentSizes.length >= 10) {
+      const avg = recentSizes.reduce((a, b) => a + b, 0) / recentSizes.length;
+      const variance = recentSizes.reduce((a, b) => a + (b - avg) ** 2, 0) / recentSizes.length;
+      const stddev = Math.sqrt(variance);
+      // Порог: либо статистически значимое отклонение (3 стандартных отклонения),
+      // либо просто большая относительная разница (30%) — что больше, то и используем.
+      // Это защищает от гиперчувствительности, когда размер обычно почти не меняется.
+      const threshold = Math.max(3 * stddev, avg * 0.3);
+      sizeAnomaly = Math.abs(result.responseSize - avg) > threshold && threshold > 0;
+    }
+  }
+
+  await insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing, result.botHealth, result.responseSize, sizeAnomaly);
 
   const lastSSL = await getSSLStatus(monitor.id);
   if (!lastSSL || Date.now() - lastSSL.checked_at > 24 * 60 * 60 * 1000) {
