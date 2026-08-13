@@ -1,11 +1,12 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, saveIncidentEvidence, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes } = require('./db');
 const { notify } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 const { timingFetch } = require('./timingFetch');
+const { runDiagnosticProbe, formatEvidenceBlock } = require('./diagnosticProbe');
 
 function checkSSLCert(hostname) {
   return new Promise((resolve) => {
@@ -293,11 +294,38 @@ async function runCheck(monitor) {
     ? diagnose({ error: result.error, statusCode: result.statusCode, responseMs: result.responseMs, timeoutMs: monitor.timeoutMs, hosting: monitor.hosting })
     : null;
 
+  // Считаем заранее (а не только внутри блока Recovery Policy ниже), чтобы
+  // использовать в Evidence-уведомлении: пользователь должен видеть
+  // "Recovery: NOT AVAILABLE" в том же сообщении, где падение объясняется,
+  // а не только когда порог afterFails уже пройден.
+  const RECOVERY_ALLOWED_CATEGORIES = ['TIMEOUT', 'HOSTING_PROBLEM', 'CONNECTION_REFUSED', 'CONTENT_MISMATCH', 'UNKNOWN'];
+  const recoveryAllowedByCategory = !currentDiagnosis || RECOVERY_ALLOWED_CATEGORIES.includes(currentDiagnosis.category);
+  const recovery = resolveRecovery(monitor);
+  const recoveryStatusLabel = recovery.provider === 'none'
+    ? (recovery.reason ? `NOT AVAILABLE (${recovery.reason})` : 'NOT AVAILABLE')
+    : !recoveryAllowedByCategory
+    ? 'NOT ATTEMPTED (причина не лечится перезапуском)'
+    : `AVAILABLE (${recovery.provider})`;
+
   // --- Incident lifecycle ---
   let currentIncidentId = null;
+  let currentEvidence = null;
   if (newStatus === 'down') {
     if (statusChanged) {
       currentIncidentId = await openIncident(monitor.id, Date.now(), currentDiagnosis.category, currentDiagnosis.label, currentDiagnosis.explanation, currentDiagnosis.suggestion, result.error);
+
+      // Пошаговое расследование (DNS/TCP/TLS/HTTP) — только при открытии
+      // инцидента, только для http-мониторов. Дорогая операция (до 3 доп.
+      // round-trip'ов), поэтому не гоняем её на каждый тик, только один раз
+      // на факт падения.
+      if (monitor.type === 'http') {
+        try {
+          currentEvidence = await runDiagnosticProbe(monitor.url, monitor.timeoutMs || 8000);
+          await saveIncidentEvidence(currentIncidentId, currentEvidence);
+        } catch (e) {
+          console.error(`[DiagnosticProbe] Ошибка для ${monitor.id}:`, e.message);
+        }
+      }
     } else {
       currentIncidentId = prevState ? prevState.current_incident_id : null;
       await incrementIncidentChecks(currentIncidentId, result.error);
@@ -338,9 +366,18 @@ async function runCheck(monitor) {
         }
         // при флаппинге обычное "упал" не шлём — только сводное уведомление выше
       } else {
+        let evidenceText = '';
+        if (currentEvidence) {
+          evidenceText = '\n\n' + formatEvidenceBlock(currentEvidence, {
+            hosting: monitor.hosting || null,
+            conclusion: currentDiagnosis ? currentDiagnosis.label : null,
+            recoveryStatus: recoveryStatusLabel,
+            action: 'Notification sent',
+          });
+        }
         await notify(
           `🔴 ${monitor.name} недоступен`,
-          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
+          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}${evidenceText}`
         );
       }
       await markIncidentNotified(currentIncidentId);
@@ -352,17 +389,11 @@ async function runCheck(monitor) {
     }
   }
 
-  // --- Recovery Conditions ---
-  // Не всякая причина падения означает, что перезапуск поможет. Например,
-  // при DNS_PROBLEM, SSL_PROBLEM или SUSPENDED перезапуск процесса бессмыслен —
-  // проблема не в самом процессе, и попытка restart только маскирует
-  // реальную причину. Разрешаем автовосстановление только для категорий,
-  // где перезапуск процесса действительно может помочь.
-  const RECOVERY_ALLOWED_CATEGORIES = ['TIMEOUT', 'HOSTING_PROBLEM', 'CONNECTION_REFUSED', 'CONTENT_MISMATCH', 'UNKNOWN'];
-  const recoveryAllowedByCategory = !currentDiagnosis || RECOVERY_ALLOWED_CATEGORIES.includes(currentDiagnosis.category);
-
   // --- Recovery Policy ---
-  const recovery = resolveRecovery(monitor);
+  // (recoveryAllowedByCategory считается выше, вместе с currentDiagnosis —
+  // не всякая причина падения означает, что перезапуск поможет: при
+  // DNS_PROBLEM, SSL_PROBLEM или SUSPENDED restart процесса бессмыслен,
+  // проблема не в самом процессе.)
   if (recovery.enabled && recovery.provider !== 'none' && newStatus === 'down') {
     const attemptsSoFar = recoveryAttempts;
 
