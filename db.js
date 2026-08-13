@@ -96,6 +96,8 @@ async function initDb() {
     `ALTER TABLE checks ADD COLUMN content_ok INTEGER`,
     `ALTER TABLE checks ADD COLUMN timing_breakdown TEXT`,
     `ALTER TABLE checks ADD COLUMN bot_health TEXT`,
+    `ALTER TABLE checks ADD COLUMN response_size INTEGER`,
+    `ALTER TABLE checks ADD COLUMN size_anomaly INTEGER DEFAULT 0`,
     `ALTER TABLE monitor_state ADD COLUMN consecutive_fails INTEGER DEFAULT 0`,
     `ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DEFAULT 0`,
     `ALTER TABLE monitor_state ADD COLUMN recovery_attempts INTEGER DEFAULT 0`,
@@ -115,18 +117,28 @@ async function initDb() {
   console.log('[db] Turso: схема инициализирована');
 }
 
-async function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth) {
+async function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth, responseSize, sizeAnomaly) {
   await run(
-    `INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok, timing_breakdown, bot_health)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO checks (monitor_id, ts, ok, response_ms, status_code, error, response_headers, content_ok, timing_breakdown, bot_health, response_size, size_anomaly)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       monitorId, Date.now(), ok ? 1 : 0, responseMs ?? null, statusCode ?? null, error ?? null,
       responseHeaders ? JSON.stringify(responseHeaders) : null,
       contentOk === undefined || contentOk === null ? null : (contentOk ? 1 : 0),
       timing ? JSON.stringify(timing) : null,
       botHealth ? JSON.stringify(botHealth) : null,
+      responseSize ?? null,
+      sizeAnomaly ? 1 : 0,
     ]
   );
+}
+
+async function getRecentResponseSizes(monitorId, limit) {
+  const rows = await q(
+    `SELECT response_size FROM checks WHERE monitor_id = ? AND ok = 1 AND response_size IS NOT NULL ORDER BY ts DESC LIMIT ?`,
+    [monitorId, limit || 30]
+  );
+  return rows.map((r) => r.response_size);
 }
 
 async function getLastCheck(monitorId) {
@@ -392,6 +404,7 @@ async function countMonitorConfigs() {
 module.exports = {
   initDb,
   insertCheck,
+  getRecentResponseSizes,
   getLastCheck,
   getHistory,
   getHistoryAggregated,
