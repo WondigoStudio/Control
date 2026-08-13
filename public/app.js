@@ -181,6 +181,75 @@ deleteMonitorBtn.addEventListener('click', async () => {
   }
 });
 
+document.getElementById('checkNowBtn').addEventListener('click', async () => {
+  if (!currentMonitor) return;
+  const btn = document.getElementById('checkNowBtn');
+  const resultBox = document.getElementById('checkNowResult');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Проверяю...';
+  resultBox.hidden = true;
+
+  try {
+    const res = await fetch(`/api/monitors/${currentMonitor.id}/check-now`, { method: 'POST' });
+    const result = await res.json();
+    renderCheckNowResult(result, currentMonitor);
+  } catch (e) {
+    resultBox.hidden = false;
+    resultBox.innerHTML = `<div class="empty" style="color:var(--down);">Ошибка: ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Проверить сейчас (подробно)';
+  }
+});
+
+function checkRow(label, valueText, ok, warn) {
+  const icon = ok === null ? '—' : (warn ? '⚠' : (ok ? '✓' : '✗'));
+  const cls = ok === null ? 'cn-neutral' : (warn ? 'cn-warn' : (ok ? 'cn-ok' : 'cn-fail'));
+  return `<div class="cn-row"><span class="cn-label">${escapeHtml(label)}</span><span class="cn-value">${escapeHtml(valueText)}</span><span class="cn-icon ${cls}">${icon}</span></div>`;
+}
+
+function renderCheckNowResult(result, monitor) {
+  const resultBox = document.getElementById('checkNowResult');
+  resultBox.hidden = false;
+
+  let rows = '';
+
+  if (result.timing) {
+    const t = result.timing;
+    const dns = t.dns ?? 0;
+    const tcp = t.tcp !== null && t.tcp !== undefined ? Math.max(t.tcp - dns, 0) : null;
+    const tls = t.tls !== null && t.tls !== undefined ? Math.max(t.tls - (t.tcp ?? dns), 0) : null;
+    const server = t.ttfb !== null && t.ttfb !== undefined ? Math.max(t.ttfb - (t.tls ?? t.tcp ?? dns), 0) : null;
+    const download = t.total !== null && t.total !== undefined ? Math.max(t.total - (t.ttfb ?? 0), 0) : null;
+
+    if (t.dns !== null) rows += checkRow('DNS', `${dns} мс`, dns < 500, dns >= 200 && dns < 500);
+    if (tcp !== null) rows += checkRow('TCP', `${tcp} мс`, tcp < 500, tcp >= 300 && tcp < 500);
+    if (tls !== null) rows += checkRow('TLS', `${tls} мс`, tls < 800, tls >= 500 && tls < 800);
+    if (server !== null) rows += checkRow('Сервер (TTFB)', `${server} мс`, server < 1500, server >= 1000 && server < 1500);
+    if (download !== null) rows += checkRow('Загрузка', `${download} мс`, download < 800, download >= 500 && download < 800);
+  }
+
+  rows += '<div class="cn-divider"></div>';
+  rows += checkRow('HTTP-статус', result.statusCode !== null ? String(result.statusCode) : '—', result.statusCode !== null ? (result.statusCode < 400) : null);
+  rows += checkRow('Контент', result.contentOk === null ? 'не проверялось' : (result.contentOk ? 'совпадает' : 'не совпадает'), result.contentOk);
+
+  if (monitor.ssl) {
+    rows += checkRow('SSL-сертификат', monitor.ssl.daysLeft !== null && monitor.ssl.daysLeft !== undefined ? `ещё ${monitor.ssl.daysLeft} дн.` : (monitor.ssl.error || '—'), monitor.ssl.valid, monitor.ssl.valid && monitor.ssl.daysLeft <= 14);
+  }
+
+  const diagOk = result.ok;
+  const diagLabel = diagOk ? 'HEALTHY' : (result.error || 'ОШИБКА');
+  const diagCategory = diagOk ? null : null; // категория недоступна напрямую из check-now, используем текст ошибки
+
+  resultBox.innerHTML = `
+    <div class="cn-rows">${rows}</div>
+    <div class="cn-diagnosis ${diagOk ? 'cn-diag-ok' : 'cn-diag-fail'}">
+      Diagnosis: <b>${escapeHtml(diagLabel)}</b>
+    </div>
+  `;
+}
+
 document.getElementById('maintenanceBtn').addEventListener('click', async () => {
   if (!currentMonitor) return;
 
@@ -421,6 +490,7 @@ async function openDetail(m) {
   [...periodSwitch.children].forEach((b) => b.classList.toggle('active', b.dataset.hours === '24'));
   detail.hidden = false;
   detailTitle.textContent = m.name;
+  document.getElementById('checkNowResult').hidden = true;
   await loadDetail(m);
 
   if (detailRefreshTimer) clearInterval(detailRefreshTimer);
