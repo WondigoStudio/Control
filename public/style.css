@@ -717,3 +717,48 @@ html, body {
   color: var(--accent);
   margin-top: 6px;
 }
+
+/* Детальный Check Now */
+.check-now-result {
+  margin-top: 12px;
+  margin-bottom: 16px;
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.cn-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cn-row {
+  display: grid;
+  grid-template-columns: 1fr auto 24px;
+  gap: 12px;
+  align-items: center;
+}
+.cn-label { color: var(--text-dim); }
+.cn-value { color: var(--text); text-align: right; }
+.cn-icon { text-align: center; font-weight: 700; }
+.cn-icon.cn-ok { color: var(--up); }
+.cn-icon.cn-warn { color: var(--accent); }
+.cn-icon.cn-fail { color: var(--down); }
+.cn-icon.cn-neutral { color: var(--text-dim); }
+
+.cn-divider {
+  height: 1px;
+  background: var(--panel-border);
+  margin: 8px 0;
+}
+
+.cn-diagnosis {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+  font-size: 13px;
+}
+.cn-diag-ok { color: var(--up); }
+.cn-diag-fail { color: var(--down); }
