@@ -66,6 +66,21 @@ async function checkHttp(monitor) {
       contentOk = res.body.includes(monitor.expectedContent);
     }
 
+    // "Must NOT contain" — обобщение suspension-детектора под свои фразы,
+    // например "Database error" или "Account suspended" для конкретного сайта.
+    let forbiddenMatch = null;
+    if (monitor.expectedContentAbsent) {
+      const forbiddenList = Array.isArray(monitor.expectedContentAbsent)
+        ? monitor.expectedContentAbsent
+        : String(monitor.expectedContentAbsent).split(',').map((s) => s.trim()).filter(Boolean);
+      for (const phrase of forbiddenList) {
+        if (phrase && res.body.includes(phrase)) {
+          forbiddenMatch = phrase;
+          break;
+        }
+      }
+    }
+
     const suspensionMatch = detectSuspensionSignature(res.body);
 
     let botHealth = null;
@@ -84,9 +99,10 @@ async function checkHttp(monitor) {
       }
     }
 
-    const ok = statusOk && (contentOk === null || contentOk === true) && !suspensionMatch;
+    const ok = statusOk && (contentOk === null || contentOk === true) && !suspensionMatch && !forbiddenMatch;
     let error = null;
     if (suspensionMatch) error = `SUSPENSION_PAGE_DETECTED: ${suspensionMatch}`;
+    else if (forbiddenMatch) error = `FORBIDDEN_CONTENT_DETECTED: ${forbiddenMatch}`;
     else if (!statusOk) error = `Unexpected status ${res.statusCode}`;
     else if (contentOk === false) error = `Ожидаемый текст "${monitor.expectedContent}" не найден на странице`;
 
