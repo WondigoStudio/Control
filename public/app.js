@@ -826,6 +826,9 @@ function renderLog(history) {
         if (parts.length) headersLine = `<div class="log-headers">${escapeHtml(parts.join(' · '))}</div>`;
       } catch (e) {}
     }
+    const sizeAnomalyLine = h.size_anomaly
+      ? `<div class="log-headers" style="color:var(--accent);">⚠️ необычный размер ответа: ${h.response_size} байт (сильно отличается от обычного)</div>`
+      : '';
     return `
     <div class="${h.ok ? 'ok' : 'fail'}">
       <span>${fmtTime(h.ts)}</span>
@@ -833,6 +836,7 @@ function renderLog(history) {
       <span>${fmtMs(h.response_ms)}</span>
     </div>
     ${headersLine}
+    ${sizeAnomalyLine}
   `;
   }).join('');
 }
