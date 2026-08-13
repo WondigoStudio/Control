@@ -326,6 +326,7 @@ periodSwitch.addEventListener('click', (e) => {
   [...periodSwitch.children].forEach((b) => b.classList.remove('active'));
   btn.classList.add('active');
   currentHours = parseInt(btn.dataset.hours, 10);
+  chartZoomRange = null; // новый период — старый зум по времени больше не актуален
   loadDetail(currentMonitor);
 });
 
@@ -355,10 +356,18 @@ function statusLabel(s) {
   return 'нет данных';
 }
 
+// Кэш последнего списка мониторов из общего 15-секундного опроса
+// (loadMonitors ниже). detailRefreshTimer переиспользует эти данные вместо
+// собственного отдельного fetch('/api/monitors') — раньше при открытой
+// детальной карточке список мониторов запрашивался ДВАЖДЫ каждые 15 сек
+// двумя независимыми таймерами без всякой на то причины.
+let latestMonitorsData = [];
+
 async function loadMonitors() {
   const url = sortByReliability ? '/api/monitors?sort=reliability' : '/api/monitors';
   const res = await fetch(url);
   const data = await res.json();
+  latestMonitorsData = data;
   renderGrid(data);
   updateSummary(data);
   loadSummaryBar();
@@ -487,6 +496,7 @@ function renderGrid(data) {
 async function openDetail(m) {
   currentMonitor = m;
   currentHours = 24;
+  chartZoomRange = null; // открываем другой монитор — зум от предыдущего графика неприменим
   [...periodSwitch.children].forEach((b) => b.classList.toggle('active', b.dataset.hours === '24'));
   detail.hidden = false;
   detailTitle.textContent = m.name;
@@ -496,10 +506,10 @@ async function openDetail(m) {
   if (detailRefreshTimer) clearInterval(detailRefreshTimer);
   detailRefreshTimer = setInterval(async () => {
     if (!currentMonitor || detail.hidden) return;
-    // Подтягиваем свежий статус монитора, затем перезагружаем детали
-    const res = await fetch('/api/monitors');
-    const list = await res.json();
-    const fresh = list.find((x) => x.id === currentMonitor.id);
+    // Берём свежие данные из общего опроса дашборда (latestMonitorsData,
+    // обновляется тем же интервалом loadMonitors) вместо отдельного
+    // fetch('/api/monitors') — тот же результат, но без дублирующего запроса.
+    const fresh = latestMonitorsData.find((x) => x.id === currentMonitor.id);
     if (fresh) {
       currentMonitor = fresh;
       await loadDetail(fresh);
@@ -779,11 +789,31 @@ function renderIncidents(incidents) {
 // Запоминаем полную (не увеличенную) историю за выбранный период, чтобы
 // можно было выделить отрезок мышью и приблизить его, а потом сбросить
 // обратно к полному виду без повторного запроса к серверу.
+//
+// Зум хранится как ВРЕМЕННОЙ диапазон (ts), а не индексы массива — history
+// каждые 15с перезапрашивается заново и переиндексируется, а по timestamp
+// один и тот же участок графика находится заново после обновления данных,
+// поэтому увеличенный отрезок не прыгает обратно к полному виду сам собой.
 let chartFullHistory = [];
 let chartMouseUpHandler = null; // чтобы не плодить обработчики на window при каждой перерисовке
+let chartZoomRange = null; // { from: ts, to: ts } | null — null означает "показываем всё"
 
 function renderChart(history) {
   chartFullHistory = history;
+
+  if (chartZoomRange) {
+    const zoomed = history.filter((h) => h.ts >= chartZoomRange.from && h.ts <= chartZoomRange.to);
+    // Если после обновления данных в диапазоне почти ничего не осталось
+    // (например, переключили период и старый зум больше не имеет смысла) —
+    // тихо сбрасываем зум вместо показа пустого/бессмысленного графика.
+    if (zoomed.length >= 2) {
+      document.getElementById('resetZoomBtn').hidden = false;
+      drawChart(zoomed);
+      return;
+    }
+    chartZoomRange = null;
+  }
+
   document.getElementById('resetZoomBtn').hidden = true;
   drawChart(history);
 }
@@ -792,11 +822,13 @@ function zoomChartToRange(startIdx, endIdx) {
   const from = Math.max(0, Math.min(startIdx, endIdx));
   const to = Math.min(chartFullHistory.length - 1, Math.max(startIdx, endIdx));
   if (to - from < 1) return; // слишком маленькое выделение — не увеличиваем
+  chartZoomRange = { from: chartFullHistory[from].ts, to: chartFullHistory[to].ts };
   document.getElementById('resetZoomBtn').hidden = false;
   drawChart(chartFullHistory.slice(from, to + 1));
 }
 
 document.getElementById('resetZoomBtn').addEventListener('click', () => {
+  chartZoomRange = null;
   document.getElementById('resetZoomBtn').hidden = true;
   drawChart(chartFullHistory);
 });
