@@ -762,3 +762,16 @@ html, body {
 }
 .cn-diag-ok { color: var(--up); }
 .cn-diag-fail { color: var(--down); }
+
+.chart-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+.chart-hint {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
