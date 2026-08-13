@@ -66,6 +66,11 @@ async function openMonitorForm(monitor) {
 
   document.getElementById('f_backupUrl').value = monitor && monitor.failover && monitor.failover.backupUrl ? monitor.failover.backupUrl : '';
 
+  const flapping = monitor && monitor.flapping ? monitor.flapping : null;
+  document.getElementById('f_flappingEnabled').checked = !flapping || flapping.enabled !== false;
+  document.getElementById('f_flappingWindow').value = flapping && flapping.windowMinutes ? flapping.windowMinutes : 10;
+  document.getElementById('f_flappingThreshold').value = flapping && flapping.threshold ? flapping.threshold : 3;
+
   updateFormFieldsVisibility();
   monitorFormModal.hidden = false;
 }
@@ -113,6 +118,12 @@ function buildMonitorPayload() {
   if (backupUrl) {
     payload.failover = { backupUrl };
   }
+
+  payload.flapping = {
+    enabled: document.getElementById('f_flappingEnabled').checked,
+    windowMinutes: parseInt(document.getElementById('f_flappingWindow').value, 10) || 10,
+    threshold: parseInt(document.getElementById('f_flappingThreshold').value, 10) || 3,
+  };
 
   return payload;
 }
