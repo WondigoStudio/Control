@@ -100,6 +100,7 @@ async function initDb() {
     `ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DEFAULT 0`,
     `ALTER TABLE monitor_state ADD COLUMN recovery_attempts INTEGER DEFAULT 0`,
     `ALTER TABLE monitor_state ADD COLUMN recovery_exhausted_notified INTEGER DEFAULT 0`,
+    `ALTER TABLE monitor_state ADD COLUMN last_flapping_notified_ts INTEGER`,
     `ALTER TABLE monitor_state ADD COLUMN current_incident_id INTEGER`,
     `ALTER TABLE restart_log ADD COLUMN incident_id INTEGER`,
   ];
@@ -347,6 +348,20 @@ async function getIncidentsForMonitor(monitorId, sinceTs, limit) {
   return q(`SELECT * FROM incidents WHERE monitor_id = ? AND started_at >= ? ORDER BY started_at DESC LIMIT ?`, [monitorId, sinceTs, limit || 50]);
 }
 
+// --- Flapping detection ---
+// Использует уже существующую таблицу incidents — просто считает, сколько
+// отдельных падений было у монитора за последнее время. Ничего нового
+// собирать не нужно.
+
+async function countRecentIncidents(monitorId, sinceTs) {
+  const row = await qOne(`SELECT COUNT(*) as cnt FROM incidents WHERE monitor_id = ? AND started_at >= ?`, [monitorId, sinceTs]);
+  return row ? Number(row.cnt) : 0;
+}
+
+async function markFlappingNotified(monitorId) {
+  await run(`UPDATE monitor_state SET last_flapping_notified_ts = ? WHERE monitor_id = ?`, [Date.now(), monitorId]);
+}
+
 // --- Конфигурация мониторов (для UI управления, Этап 9) ---
 
 async function getAllMonitorConfigs() {
@@ -402,6 +417,8 @@ module.exports = {
   markIncidentNotified,
   markIncidentRecovery,
   getIncidentsForMonitor,
+  countRecentIncidents,
+  markFlappingNotified,
   getAllMonitorConfigs,
   upsertMonitorConfig,
   deleteMonitorConfig,
