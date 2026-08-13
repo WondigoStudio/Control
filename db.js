@@ -105,6 +105,7 @@ async function initDb() {
     `ALTER TABLE monitor_state ADD COLUMN last_flapping_notified_ts INTEGER`,
     `ALTER TABLE monitor_state ADD COLUMN current_incident_id INTEGER`,
     `ALTER TABLE restart_log ADD COLUMN incident_id INTEGER`,
+    `ALTER TABLE incidents ADD COLUMN evidence_json TEXT`,
   ];
   for (const sql of migrations) {
     try {
@@ -335,6 +336,22 @@ async function openIncident(monitorId, startedAt, causeCategory, causeLabel, cau
   return incidentId;
 }
 
+async function saveIncidentEvidence(incidentId, evidence) {
+  if (!incidentId) return;
+  await run(`UPDATE incidents SET evidence_json = ? WHERE id = ?`, [JSON.stringify(evidence), incidentId]);
+}
+
+async function getIncidentEvidence(incidentId) {
+  if (!incidentId) return null;
+  const row = await qOne(`SELECT evidence_json FROM incidents WHERE id = ?`, [incidentId]);
+  if (!row || !row.evidence_json) return null;
+  try {
+    return JSON.parse(row.evidence_json);
+  } catch (e) {
+    return null;
+  }
+}
+
 async function incrementIncidentChecks(incidentId, error) {
   if (!incidentId) return;
   await run(`UPDATE incidents SET checks_failed = checks_failed + 1, last_error = ? WHERE id = ?`, [error ?? null, incidentId]);
@@ -425,6 +442,8 @@ module.exports = {
   saveMultiLocationResult,
   getMultiLocationResult,
   openIncident,
+  saveIncidentEvidence,
+  getIncidentEvidence,
   incrementIncidentChecks,
   closeIncident,
   markIncidentNotified,
