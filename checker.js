@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified } = require('./db');
 const { notify } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
@@ -263,12 +263,43 @@ async function runCheck(monitor) {
     await closeIncident(monitor.id, prevState.current_incident_id, Date.now());
   }
 
+  // --- Flapping detection ---
+  // Использует уже существующую таблицу инцидентов — просто считает, сколько
+  // отдельных падений было у монитора за последнее окно времени. Если сервис
+  // не столько "упал", сколько мечется между up/down — обычные уведомления
+  // о каждом отдельном падении только шумят, толку от них немного.
+  const flapping = {
+    enabled: !monitor.flapping || monitor.flapping.enabled !== false,
+    windowMinutes: (monitor.flapping && monitor.flapping.windowMinutes) || 10,
+    threshold: (monitor.flapping && monitor.flapping.threshold) || 3,
+  };
+  let isFlapping = false;
+  let recentIncidentsCount = 0;
+  if (newStatus === 'down' && statusChanged && flapping.enabled) {
+    const windowMs = flapping.windowMinutes * 60 * 1000;
+    recentIncidentsCount = await countRecentIncidents(monitor.id, Date.now() - windowMs);
+    isFlapping = recentIncidentsCount >= flapping.threshold;
+  }
+
   if (statusChanged && prevState) {
     if (newStatus === 'down') {
-      await notify(
-        `🔴 ${monitor.name} недоступен`,
-        `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
-      );
+      if (isFlapping) {
+        const windowMs = flapping.windowMinutes * 60 * 1000;
+        const lastFlapNotified = prevState.last_flapping_notified_ts || 0;
+        if (Date.now() - lastFlapNotified > windowMs) {
+          await markFlappingNotified(monitor.id);
+          await notify(
+            `⚠️ ${monitor.name} нестабилен (flapping)`,
+            `Монитор "${monitor.name}" переключился между "работает" и "недоступен" ${recentIncidentsCount} раз за последние ${flapping.windowMinutes} минут.\n\nЭто похоже на нестабильность сервиса, а не единичное падение. Обычные уведомления о каждом отдельном падении временно не отправляются, пока флаппинг продолжается — чтобы не заваливать почту.`
+          );
+        }
+        // при флаппинге обычное "упал" не шлём — только сводное уведомление выше
+      } else {
+        await notify(
+          `🔴 ${monitor.name} недоступен`,
+          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        );
+      }
       await markIncidentNotified(currentIncidentId);
     } else {
       await notify(
