@@ -52,6 +52,15 @@ async function initDb() {
         checked_at INTEGER,
         error TEXT
       )`,
+      `CREATE TABLE IF NOT EXISTS domain_status (
+        monitor_id TEXT PRIMARY KEY,
+        domain TEXT,
+        valid INTEGER,
+        expires_at INTEGER,
+        days_left INTEGER,
+        checked_at INTEGER,
+        error TEXT
+      )`,
       `CREATE TABLE IF NOT EXISTS restart_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         monitor_id TEXT NOT NULL,
@@ -86,6 +95,17 @@ async function initDb() {
         config_json TEXT NOT NULL,
         created_at INTEGER,
         updated_at INTEGER
+      )`,
+      `CREATE TABLE IF NOT EXISTS trend_state (
+        monitor_id TEXT PRIMARY KEY,
+        last_notified_ts INTEGER,
+        baseline_ms INTEGER,
+        last_ratio REAL
+      )`,
+      `CREATE TABLE IF NOT EXISTS bot_queue_state (
+        monitor_id TEXT PRIMARY KEY,
+        last_notified_ts INTEGER,
+        last_pending_count INTEGER
       )`,
     ],
     'write'
@@ -202,6 +222,59 @@ async function getResponseStats(monitorId, sinceTs) {
   };
 }
 
+async function getHourlyResponseBuckets(monitorId, sinceTs) {
+  // Только успешные проверки — падения не должны искажать картину задержки,
+  // для них уже есть отдельный incident lifecycle.
+  const rows = await q(
+    `SELECT ts, response_ms FROM checks WHERE monitor_id = ? AND ts >= ? AND ok = 1 AND response_ms IS NOT NULL ORDER BY ts ASC`,
+    [monitorId, sinceTs]
+  );
+  const bucketMs = 60 * 60 * 1000;
+  const buckets = new Map();
+  for (const row of rows) {
+    const key = Math.floor(row.ts / bucketMs) * bucketMs;
+    if (!buckets.has(key)) buckets.set(key, { ts: key, sum: 0, count: 0 });
+    const b = buckets.get(key);
+    b.sum += row.response_ms;
+    b.count += 1;
+  }
+  return [...buckets.values()]
+    .sort((a, b) => a.ts - b.ts)
+    .map((b) => ({ ts: b.ts, avgMs: Math.round(b.sum / b.count), count: b.count }));
+}
+
+async function getTrendState(monitorId) {
+  return qOne(`SELECT * FROM trend_state WHERE monitor_id = ?`, [monitorId]);
+}
+
+async function upsertTrendState(monitorId, ts, baselineMs, ratio) {
+  await run(
+    `INSERT INTO trend_state (monitor_id, last_notified_ts, baseline_ms, last_ratio) VALUES (?, ?, ?, ?)
+     ON CONFLICT(monitor_id) DO UPDATE SET last_notified_ts = excluded.last_notified_ts, baseline_ms = excluded.baseline_ms, last_ratio = excluded.last_ratio`,
+    [monitorId, ts, baselineMs, ratio]
+  );
+}
+
+async function clearTrendState(monitorId) {
+  await run(`DELETE FROM trend_state WHERE monitor_id = ?`, [monitorId]);
+}
+
+async function getBotQueueState(monitorId) {
+  return qOne(`SELECT * FROM bot_queue_state WHERE monitor_id = ?`, [monitorId]);
+}
+
+async function upsertBotQueueState(monitorId, ts, pendingCount) {
+  await run(
+    `INSERT INTO bot_queue_state (monitor_id, last_notified_ts, last_pending_count) VALUES (?, ?, ?)
+     ON CONFLICT(monitor_id) DO UPDATE SET last_notified_ts = excluded.last_notified_ts, last_pending_count = excluded.last_pending_count`,
+    [monitorId, ts, pendingCount]
+  );
+}
+
+async function clearBotQueueState(monitorId) {
+  await run(`DELETE FROM bot_queue_state WHERE monitor_id = ?`, [monitorId]);
+}
+
 async function getDailyUptime(monitorId, days) {
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
   const rows = await q(
@@ -292,6 +365,21 @@ async function setSSLStatus(monitorId, valid, expiresAt, daysLeft, error) {
 
 async function getSSLStatus(monitorId) {
   return qOne(`SELECT * FROM ssl_status WHERE monitor_id = ?`, [monitorId]);
+}
+
+async function setDomainStatus(monitorId, domain, valid, expiresAt, daysLeft, error) {
+  await run(
+    `INSERT INTO domain_status (monitor_id, domain, valid, expires_at, days_left, checked_at, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(monitor_id) DO UPDATE SET
+       domain = excluded.domain, valid = excluded.valid, expires_at = excluded.expires_at, days_left = excluded.days_left,
+       checked_at = excluded.checked_at, error = excluded.error`,
+    [monitorId, domain ?? null, valid ? 1 : 0, expiresAt ?? null, daysLeft ?? null, Date.now(), error ?? null]
+  );
+}
+
+async function getDomainStatus(monitorId) {
+  return qOne(`SELECT * FROM domain_status WHERE monitor_id = ?`, [monitorId]);
 }
 
 async function logRestartAttempt(monitorId, success, error, incidentId) {
@@ -436,6 +524,8 @@ module.exports = {
   markRecoveryExhaustedNotified,
   setSSLStatus,
   getSSLStatus,
+  setDomainStatus,
+  getDomainStatus,
   logRestartAttempt,
   getRestartLog,
   countRecentRestarts,
@@ -455,4 +545,11 @@ module.exports = {
   upsertMonitorConfig,
   deleteMonitorConfig,
   countMonitorConfigs,
+  getHourlyResponseBuckets,
+  getTrendState,
+  upsertTrendState,
+  clearTrendState,
+  getBotQueueState,
+  upsertBotQueueState,
+  clearBotQueueState,
 };
