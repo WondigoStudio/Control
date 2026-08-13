@@ -1,12 +1,13 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, saveIncidentEvidence, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, setDomainStatus, getDomainStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, saveIncidentEvidence, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes, getBotQueueState, upsertBotQueueState, clearBotQueueState } = require('./db');
 const { notify } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 const { timingFetch } = require('./timingFetch');
 const { runDiagnosticProbe, formatEvidenceBlock } = require('./diagnosticProbe');
+const { checkDomainExpiry } = require('./domainExpiry');
 
 function checkSSLCert(hostname) {
   return new Promise((resolve) => {
@@ -51,6 +52,32 @@ async function runSSLCheck(monitor) {
     }
   } catch (e) {
     await setSSLStatus(monitor.id, false, null, null, e.message);
+  }
+}
+
+// Domain Expiry — тот же паттерн, что и runSSLCheck выше, только источник
+// данных RDAP вместо TLS-хендшейка. Порог предупреждения шире (30 дней, а не
+// 14) — доменом занимается регистратор, а не ты сам, и на продление часто
+// уходит больше времени (счета, апрувы), чем на перевыпуск сертификата.
+async function runDomainCheck(monitor) {
+  if (monitor.type !== 'http' || !monitor.url) return;
+  try {
+    const hostname = new URL(monitor.url).hostname;
+    const result = await checkDomainExpiry(hostname);
+    await setDomainStatus(monitor.id, result.domain, result.valid, result.expiresAt, result.daysLeft, result.error);
+
+    if (result.valid && result.daysLeft <= 30) {
+      const prev = await getDomainStatus(monitor.id);
+      const alreadyWarned = prev && prev.days_left !== null && prev.days_left <= 30;
+      if (!alreadyWarned) {
+        await notify(
+          `⚠️ Домен ${monitor.name} скоро истекает`,
+          `Домен "${result.domain}" (монитор "${monitor.name}") истекает через ${result.daysLeft} дн.\n\nВ отличие от SSL-сертификата, просроченный домен можно потерять НАВСЕГДА — заранее продли регистрацию у регистратора.`
+        );
+      }
+    }
+  } catch (e) {
+    await setDomainStatus(monitor.id, null, false, null, null, e.message);
   }
 }
 
@@ -142,7 +169,42 @@ async function checkTelegramBot(monitor) {
     const responseMs = Date.now() - start;
     const data = await res.json();
     const ok = res.ok && data.ok === true;
-    return { ok, responseMs, statusCode: res.status, error: ok ? null : (data.description || 'Bot check failed') };
+    const result = { ok, responseMs, statusCode: res.status, error: ok ? null : (data.description || 'Bot check failed') };
+
+    // --- Queue/backlog health ---
+    // getMe только подтверждает, что токен жив — не то же самое, что "бот
+    // успевает обрабатывать сообщения". getWebhookInfo даёт метаданные о
+    // РЕАЛЬНОЙ доставке апдейтов, не требуя менять код самого бота:
+    // pending_update_count растёт, если бот получает сообщения, но не
+    // отвечает Telegram'у обработкой (завис, упал внутри, зациклился и т.п.).
+    // Актуально только для ботов на вебхуках — при long polling Telegram
+    // сам не копит очередь на своей стороне, url будет пустым.
+    if (ok) {
+      try {
+        const whController = new AbortController();
+        const whTimeout = setTimeout(() => whController.abort(), monitor.timeoutMs || 8000);
+        const whRes = await fetch(`https://api.telegram.org/bot${monitor.botToken}/getWebhookInfo`, { signal: whController.signal });
+        clearTimeout(whTimeout);
+        const whData = await whRes.json();
+        if (whRes.ok && whData.ok && whData.result && whData.result.url) {
+          const info = whData.result;
+          result.botQueue = {
+            applicable: true,
+            pendingCount: info.pending_update_count ?? 0,
+            lastErrorMessage: info.last_error_message || null,
+            lastErrorAgoSec: info.last_error_date ? Math.floor(Date.now() / 1000) - info.last_error_date : null,
+          };
+        } else {
+          result.botQueue = { applicable: false, reason: 'long polling — Telegram не копит очередь на своей стороне' };
+        }
+      } catch (e) {
+        // Диагностическая метаинформация — её недоступность не должна валить
+        // основной результат проверки (бот всё ещё "жив" по getMe).
+        result.botQueue = { applicable: false, reason: `getWebhookInfo недоступен: ${e.message}` };
+      }
+    }
+
+    return result;
   } catch (e) {
     return { ok: false, responseMs: Date.now() - start, statusCode: null, error: e.message };
   }
@@ -263,9 +325,45 @@ async function runCheck(monitor) {
 
   await insertCheck(monitor.id, result.ok, result.responseMs, result.statusCode, result.error, result.headers, result.contentOk, result.timing, result.botHealth, result.responseSize, sizeAnomaly);
 
+  // --- Bot queue/backlog health (только для type: telegram_bot на вебхуках) ---
+  // Не влияет на ok/down этого тика — бот технически жив (getMe прошёл),
+  // это отдельный, более ранний сигнал "не успевает работать", в духе
+  // Predictive Failure Detection, но по очереди апдейтов, а не по latency.
+  if (monitor.type === 'telegram_bot' && result.botQueue && result.botQueue.applicable) {
+    const threshold = (monitor.botQueue && monitor.botQueue.pendingThreshold) || 20;
+    const cooldownMs = ((monitor.botQueue && monitor.botQueue.cooldownMinutes) || 60) * 60 * 1000;
+    const pending = result.botQueue.pendingCount;
+    const prevQueueState = await getBotQueueState(monitor.id);
+
+    if (pending < threshold * 0.5) {
+      // Очередь рассосалась — сбрасываем, чтобы следующий backlog уведомил сразу.
+      if (prevQueueState) await clearBotQueueState(monitor.id);
+    } else if (pending >= threshold) {
+      const lastNotified = prevQueueState ? prevQueueState.last_notified_ts : 0;
+      if (!prevQueueState || Date.now() - lastNotified >= cooldownMs) {
+        await upsertBotQueueState(monitor.id, Date.now(), pending);
+        const errorLine = result.botQueue.lastErrorMessage
+          ? `\n\nПоследняя ошибка доставки Telegram: "${result.botQueue.lastErrorMessage}"${result.botQueue.lastErrorAgoSec !== null ? ` (${Math.floor(result.botQueue.lastErrorAgoSec / 60)} мин назад)` : ''}`
+          : '';
+        await notify(
+          `⚠️ ${monitor.name}: копится очередь необработанных сообщений`,
+          `Бот "${monitor.name}" отвечает на getMe (токен жив), но Telegram не может доставить ему ${pending} обновлени${pending === 1 ? 'е' : 'й'} — похоже, обработчик завис или упал внутри, не отвечая на вебхук.${errorLine}\n\nЭто раннее предупреждение: сам бот пока не помечен как "недоступен", но с пользователями он сейчас фактически не общается.`
+        );
+      }
+    }
+  }
+
   const lastSSL = await getSSLStatus(monitor.id);
   if (!lastSSL || Date.now() - lastSSL.checked_at > 24 * 60 * 60 * 1000) {
     runSSLCheck(monitor).catch(() => {});
+  }
+
+  // RDAP не нуждается в проверке каждый день так же часто, как SSL — домен
+  // не "истекает внезапно" за час, а регистраторы сами шлют напоминания.
+  // Раз в сутки достаточно, дороже по времени ответа (внешний RDAP-редиректор).
+  const lastDomain = await getDomainStatus(monitor.id);
+  if (!lastDomain || Date.now() - lastDomain.checked_at > 24 * 60 * 60 * 1000) {
+    runDomainCheck(monitor).catch(() => {});
   }
 
   // --- Maintenance Mode ---
