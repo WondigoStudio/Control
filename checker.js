@@ -63,19 +63,22 @@ async function checkHttp(monitor) {
 
     let contentOk = null;
     if (monitor.expectedContent) {
-      contentOk = res.body.includes(monitor.expectedContent);
+      contentOk = res.body.toLowerCase().includes(monitor.expectedContent.toLowerCase());
     }
 
     // "Must NOT contain" — обобщение suspension-детектора под свои фразы,
     // например "Database error" или "Account suspended" для конкретного сайта.
+    // Сравнение без учёта регистра, чтобы не приходилось гадать с большими/
+    // маленькими буквами при вводе фраз.
     let forbiddenMatch = null;
     if (monitor.expectedContentAbsent) {
       const forbiddenList = Array.isArray(monitor.expectedContentAbsent)
         ? monitor.expectedContentAbsent
         : String(monitor.expectedContentAbsent).split(',').map((s) => s.trim()).filter(Boolean);
+      const bodyLower = res.body.toLowerCase();
       for (const phrase of forbiddenList) {
-        if (phrase && res.body.includes(phrase)) {
-          forbiddenMatch = phrase;
+        if (phrase && bodyLower.includes(phrase.toLowerCase())) {
+          forbiddenMatch = phrase; // сохраняем оригинальное написание для читаемости в уведомлениях
           break;
         }
       }
