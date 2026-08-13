@@ -127,6 +127,24 @@
           <input type="text" id="f_backupUrl" placeholder="https://резервный-адрес.example.com">
         </div>
 
+        <div class="form-row">
+          <label>
+            <input type="checkbox" id="f_flappingEnabled" checked style="width:auto;display:inline-block;margin-right:6px;">
+            Flapping detection (сводное уведомление вместо спама при нестабильности)
+          </label>
+        </div>
+
+        <div id="flappingFields">
+          <div class="form-row">
+            <label>Окно наблюдения (минут)</label>
+            <input type="number" id="f_flappingWindow" value="10" min="1">
+          </div>
+          <div class="form-row">
+            <label>Порог (сколько падений за окно = flapping)</label>
+            <input type="number" id="f_flappingThreshold" value="3" min="2">
+          </div>
+        </div>
+
         <div class="form-actions">
           <button type="submit" class="btn-primary">Сохранить</button>
           <button type="button" class="btn-danger" id="deleteMonitorBtn" hidden>Удалить</button>
