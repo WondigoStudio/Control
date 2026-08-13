@@ -132,8 +132,16 @@ app.get('/api/monitors', async (req, res) => {
 
   let data = await Promise.all(
     monitors.filter((m) => m.type !== 'reminder').map(async (m) => {
-      const last = await getLastCheck(m.id);
-      const ssl = await getSSLStatus(m.id);
+      // Раньше эти 4 запроса шли последовательно (await один за другим) —
+      // они независимы друг от друга, поэтому распараллеливаем через
+      // Promise.all: 4 круговых обращения к БД на монитор превращаются в 1
+      // по времени ожидания, а не в 4 подряд.
+      const [last, ssl, uptime24h, uptime7d] = await Promise.all([
+        getLastCheck(m.id),
+        getSSLStatus(m.id),
+        getUptimePercent(m.id, now - day),
+        getUptimePercent(m.id, now - week),
+      ]);
       return {
         id: m.id,
         name: m.name,
@@ -145,8 +153,8 @@ app.get('/api/monitors', async (req, res) => {
         lastError: last ? last.error : null,
         lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
         hosting: m.hosting || 'other',
-        uptime24h: await getUptimePercent(m.id, now - day),
-        uptime7d: await getUptimePercent(m.id, now - week),
+        uptime24h,
+        uptime7d,
         ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
         hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
         maintenance: (m.maintenance && m.maintenance.enabled && (!m.maintenance.until || Date.now() < m.maintenance.until))
