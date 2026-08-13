@@ -34,6 +34,7 @@ function updateFormFieldsVisibility() {
   document.getElementById('row_botToken').hidden = type !== 'telegram_bot';
   document.getElementById('row_expectedStatus').hidden = type !== 'http';
   document.getElementById('row_expectedContent').hidden = type !== 'http';
+  document.getElementById('row_expectedContentAbsent').hidden = type !== 'http';
 
   const provider = document.getElementById('f_recoveryProvider').value;
   document.getElementById('recoveryFields').hidden = provider === 'none';
@@ -55,6 +56,9 @@ async function openMonitorForm(monitor) {
   document.getElementById('f_timeoutMs').value = monitor && monitor.timeoutMs ? monitor.timeoutMs : 8000;
   document.getElementById('f_expectedStatus').value = monitor && monitor.expectedStatus ? monitor.expectedStatus : 200;
   document.getElementById('f_expectedContent').value = monitor && monitor.expectedContent ? monitor.expectedContent : '';
+  document.getElementById('f_expectedContentAbsent').value = monitor && monitor.expectedContentAbsent
+    ? (Array.isArray(monitor.expectedContentAbsent) ? monitor.expectedContentAbsent.join(', ') : monitor.expectedContentAbsent)
+    : '';
   document.getElementById('f_hosting').value = monitor && monitor.hosting ? monitor.hosting : 'other';
 
   const recovery = monitor && monitor.recovery ? monitor.recovery : (monitor && monitor.deployHookUrl ? { provider: 'render', deployHookUrl: monitor.deployHookUrl, afterFails: monitor.restartAfterFails } : null);
@@ -95,6 +99,10 @@ function buildMonitorPayload() {
     payload.expectedStatus = parseInt(document.getElementById('f_expectedStatus').value, 10) || 200;
     const expectedContent = document.getElementById('f_expectedContent').value.trim();
     if (expectedContent) payload.expectedContent = expectedContent;
+    const expectedContentAbsent = document.getElementById('f_expectedContentAbsent').value.trim();
+    if (expectedContentAbsent) {
+      payload.expectedContentAbsent = expectedContentAbsent.split(',').map((s) => s.trim()).filter(Boolean);
+    }
   } else {
     payload.botToken = document.getElementById('f_botToken').value.trim();
   }
