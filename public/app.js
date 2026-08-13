@@ -535,7 +535,7 @@ async function loadDetail(m) {
   const restarts = await restartsRes.json();
 
   renderStats(stats);
-  drawChart(history);
+  renderChart(history);
   renderLog(history);
   renderIncidents(incidents);
   renderHeatmap(heatmap);
@@ -775,6 +775,32 @@ function renderIncidents(incidents) {
   }).join('');
 }
 
+// --- Zoom графика ---
+// Запоминаем полную (не увеличенную) историю за выбранный период, чтобы
+// можно было выделить отрезок мышью и приблизить его, а потом сбросить
+// обратно к полному виду без повторного запроса к серверу.
+let chartFullHistory = [];
+let chartMouseUpHandler = null; // чтобы не плодить обработчики на window при каждой перерисовке
+
+function renderChart(history) {
+  chartFullHistory = history;
+  document.getElementById('resetZoomBtn').hidden = true;
+  drawChart(history);
+}
+
+function zoomChartToRange(startIdx, endIdx) {
+  const from = Math.max(0, Math.min(startIdx, endIdx));
+  const to = Math.min(chartFullHistory.length - 1, Math.max(startIdx, endIdx));
+  if (to - from < 1) return; // слишком маленькое выделение — не увеличиваем
+  document.getElementById('resetZoomBtn').hidden = false;
+  drawChart(chartFullHistory.slice(from, to + 1));
+}
+
+document.getElementById('resetZoomBtn').addEventListener('click', () => {
+  document.getElementById('resetZoomBtn').hidden = true;
+  drawChart(chartFullHistory);
+});
+
 function drawChart(history) {
   detailChart.innerHTML = '';
   if (!history.length) {
@@ -931,12 +957,59 @@ function drawChart(history) {
   overlay.style.cursor = 'crosshair';
   detailChart.appendChild(overlay);
 
+  // --- Выделение отрезка мышью для увеличения (zoom) ---
+  const selectionRect = document.createElementNS(svgNS, 'rect');
+  selectionRect.setAttribute('y', padTop);
+  selectionRect.setAttribute('height', plotH);
+  selectionRect.setAttribute('fill', 'rgba(242, 181, 68, 0.15)');
+  selectionRect.setAttribute('stroke', '#f2b544');
+  selectionRect.setAttribute('stroke-width', '1');
+  selectionRect.style.display = 'none';
+  detailChart.appendChild(selectionRect);
+
+  let dragStartIdx = null;
+  let isDragging = false;
+
+  function xToIndex(clientX) {
+    const rect = detailChart.getBoundingClientRect();
+    const svgX = ((clientX - rect.left) / rect.width) * w;
+    return Math.max(0, Math.min(history.length - 1, Math.round((svgX - padLeft) / stepX)));
+  }
+
+  overlay.addEventListener('mousedown', (evt) => {
+    isDragging = true;
+    dragStartIdx = xToIndex(evt.clientX);
+  });
+
+  if (chartMouseUpHandler) window.removeEventListener('mouseup', chartMouseUpHandler);
+  chartMouseUpHandler = (evt) => {
+    if (!isDragging) return;
+    isDragging = false;
+    selectionRect.style.display = 'none';
+    if (dragStartIdx === null) return;
+    const endIdx = xToIndex(evt.clientX);
+    if (Math.abs(endIdx - dragStartIdx) >= 2) {
+      zoomChartToRange(dragStartIdx, endIdx);
+    }
+    dragStartIdx = null;
+  };
+  window.addEventListener('mouseup', chartMouseUpHandler);
+
   overlay.addEventListener('mousemove', (evt) => {
     const rect = detailChart.getBoundingClientRect();
     const svgX = ((evt.clientX - rect.left) / rect.width) * w;
     const idx = Math.max(0, Math.min(history.length - 1, Math.round((svgX - padLeft) / stepX)));
     const item = history[idx];
     if (!item) return;
+
+    // Если тащим мышью с зажатой кнопкой — рисуем прямоугольник выделения
+    if (isDragging && dragStartIdx !== null) {
+      const startX = padLeft + dragStartIdx * stepX;
+      const currentX = padLeft + idx * stepX;
+      selectionRect.setAttribute('x', Math.min(startX, currentX));
+      selectionRect.setAttribute('width', Math.abs(currentX - startX));
+      selectionRect.style.display = '';
+    }
 
     const x = padLeft + idx * stepX;
     const y = padTop + plotH - ((item.response_ms || 0) / niceMax) * plotH;
