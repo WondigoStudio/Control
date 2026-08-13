@@ -820,9 +820,14 @@ function drawChart(history) {
     detailChart.appendChild(label);
   }
 
-  // Подписи по оси X (время) — первая, средняя, последняя точка
-  const xLabelIndices = [0, Math.floor((history.length - 1) / 2), history.length - 1];
-  xLabelIndices.forEach((idx) => {
+  // Подписи по оси X (время) — 6 равномерно распределённых точек вместо 3,
+  // чтобы легче было понять, в какой именно момент произошёл всплеск/провал
+  const xLabelCount = Math.min(6, history.length);
+  const xLabelIndices = [];
+  for (let i = 0; i < xLabelCount; i++) {
+    xLabelIndices.push(Math.round((i / (xLabelCount - 1 || 1)) * (history.length - 1)));
+  }
+  [...new Set(xLabelIndices)].forEach((idx) => {
     const item = history[idx];
     const x = padLeft + idx * stepX;
     const label = document.createElementNS(svgNS, 'text');
@@ -834,6 +839,17 @@ function drawChart(history) {
     label.setAttribute('font-family', 'JetBrains Mono, monospace');
     label.textContent = fmtChartTime(item.ts);
     detailChart.appendChild(label);
+
+    // Тонкая вертикальная засечка под каждой подписью — легче сопоставить
+    // подпись времени с точным местом на линии графика
+    const tick = document.createElementNS(svgNS, 'line');
+    tick.setAttribute('x1', x);
+    tick.setAttribute('x2', x);
+    tick.setAttribute('y1', padTop + plotH);
+    tick.setAttribute('y2', padTop + plotH + 4);
+    tick.setAttribute('stroke', '#3a4046');
+    tick.setAttribute('stroke-width', '1');
+    detailChart.appendChild(tick);
   });
 
   // Линия графика
@@ -872,6 +888,92 @@ function drawChart(history) {
   axisLabel.setAttribute('font-family', 'JetBrains Mono, monospace');
   axisLabel.textContent = 'мс';
   detailChart.appendChild(axisLabel);
+
+  // --- Интерактивная подсказка при наведении ---
+  // Вертикальная линия-курсор + текст с точным временем и значением в этой точке,
+  // чтобы было понятно, что именно произошло в конкретный момент графика.
+  const hoverLine = document.createElementNS(svgNS, 'line');
+  hoverLine.setAttribute('y1', padTop);
+  hoverLine.setAttribute('y2', padTop + plotH);
+  hoverLine.setAttribute('stroke', '#767d82');
+  hoverLine.setAttribute('stroke-width', '1');
+  hoverLine.setAttribute('stroke-dasharray', '3,3');
+  hoverLine.style.display = 'none';
+  detailChart.appendChild(hoverLine);
+
+  const hoverDot = document.createElementNS(svgNS, 'circle');
+  hoverDot.setAttribute('r', 3.5);
+  hoverDot.setAttribute('fill', '#f2b544');
+  hoverDot.style.display = 'none';
+  detailChart.appendChild(hoverDot);
+
+  const hoverBg = document.createElementNS(svgNS, 'rect');
+  hoverBg.setAttribute('height', 28);
+  hoverBg.setAttribute('rx', 4);
+  hoverBg.setAttribute('fill', '#131619');
+  hoverBg.setAttribute('stroke', '#22262b');
+  hoverBg.style.display = 'none';
+  detailChart.appendChild(hoverBg);
+
+  const hoverText = document.createElementNS(svgNS, 'text');
+  hoverText.setAttribute('font-size', '9');
+  hoverText.setAttribute('fill', '#d7dbdd');
+  hoverText.setAttribute('font-family', 'JetBrains Mono, monospace');
+  hoverText.style.display = 'none';
+  detailChart.appendChild(hoverText);
+
+  const overlay = document.createElementNS(svgNS, 'rect');
+  overlay.setAttribute('x', padLeft);
+  overlay.setAttribute('y', padTop);
+  overlay.setAttribute('width', plotW);
+  overlay.setAttribute('height', plotH);
+  overlay.setAttribute('fill', 'transparent');
+  overlay.style.cursor = 'crosshair';
+  detailChart.appendChild(overlay);
+
+  overlay.addEventListener('mousemove', (evt) => {
+    const rect = detailChart.getBoundingClientRect();
+    const svgX = ((evt.clientX - rect.left) / rect.width) * w;
+    const idx = Math.max(0, Math.min(history.length - 1, Math.round((svgX - padLeft) / stepX)));
+    const item = history[idx];
+    if (!item) return;
+
+    const x = padLeft + idx * stepX;
+    const y = padTop + plotH - ((item.response_ms || 0) / niceMax) * plotH;
+
+    hoverLine.setAttribute('x1', x);
+    hoverLine.setAttribute('x2', x);
+    hoverLine.style.display = '';
+
+    hoverDot.setAttribute('cx', x);
+    hoverDot.setAttribute('cy', y);
+    hoverDot.style.display = '';
+
+    const timeStr = new Date(item.ts).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const valueStr = item.ok === 0 ? 'недоступен' : `${item.response_ms ?? '—'} мс`;
+    const text = `${timeStr} · ${valueStr}`;
+    hoverText.textContent = text;
+
+    const textWidth = text.length * 5.2 + 12;
+    let boxX = x + 8;
+    if (boxX + textWidth > w - padRight) boxX = x - textWidth - 8;
+
+    hoverBg.setAttribute('x', boxX);
+    hoverBg.setAttribute('y', padTop + 4);
+    hoverBg.setAttribute('width', textWidth);
+    hoverBg.style.display = '';
+
+    hoverText.setAttribute('x', boxX + 6);
+    hoverText.setAttribute('y', padTop + 21);
+    hoverText.style.display = '';
+  });
+
+  overlay.addEventListener('mouseleave', () => {
+    hoverLine.style.display = 'none';
+    hoverDot.style.display = 'none';
+    hoverBg.style.display = 'none';
+    hoverText.style.display = 'none';
+  });
 }
 
 function fmtChartTime(ts) {
