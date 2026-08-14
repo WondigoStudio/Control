@@ -98,7 +98,7 @@ app.post('/api/login', (req, res) => {
   }
   const token = crypto.randomBytes(48).toString('hex');
   activeSessions.add(token);
-  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=None`);
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=None; Secure`);
   res.json({ ok: true });
 });
 
