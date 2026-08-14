@@ -308,6 +308,7 @@ detail.addEventListener('click', (e) => { if (e.target === detail) closeDetail()
 function closeDetail() {
   detail.hidden = true;
   currentMonitor = null;
+  touchActivity(); // закрытие карточки — тоже осознанное действие, а не фоновый опрос
   if (detailRefreshTimer) {
     clearInterval(detailRefreshTimer);
     detailRefreshTimer = null;
@@ -354,6 +355,14 @@ function statusLabel(s) {
   if (s === 'up') return 'работает';
   if (s === 'down') return 'недоступен';
   return 'нет данных';
+}
+
+// Регистрирует "просмотровую" активность (открытие/закрытие карточки
+// монитора) для inactivity-дайджеста на сервере — fire-and-forget,
+// результат ответа нам не нужен, ошибка сети не должна ничего ломать
+// в интерфейсе.
+function touchActivity() {
+  fetch('/api/activity/touch', { method: 'POST' }).catch(() => {});
 }
 
 // Кэш последнего списка мониторов из общего 15-секундного опроса
@@ -500,6 +509,7 @@ async function openDetail(m) {
   [...periodSwitch.children].forEach((b) => b.classList.toggle('active', b.dataset.hours === '24'));
   detail.hidden = false;
   detailTitle.textContent = m.name;
+  touchActivity(); // осознанный клик по карточке — считается активностью для inactivity-дайджеста
   document.getElementById('checkNowResult').hidden = true;
   await loadDetail(m);
 
