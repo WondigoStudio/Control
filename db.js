@@ -107,6 +107,12 @@ async function initDb() {
         last_notified_ts INTEGER,
         last_pending_count INTEGER
       )`,
+      `CREATE TABLE IF NOT EXISTS activity_state (
+        id TEXT PRIMARY KEY,
+        last_activity_ts INTEGER,
+        last_report_sent_ts INTEGER,
+        last_report_covers_from INTEGER
+      )`,
     ],
     'write'
   );
@@ -273,6 +279,40 @@ async function upsertBotQueueState(monitorId, ts, pendingCount) {
 
 async function clearBotQueueState(monitorId) {
   await run(`DELETE FROM bot_queue_state WHERE monitor_id = ?`, [monitorId]);
+}
+
+// --- Activity / inactivity digest state ---
+// Одна строка с фиксированным id='dashboard' — активность отслеживается
+// глобально для всего дашборда, не по монитору и не по пользователю
+// (авторизация тут одна общая, отдельных аккаунтов нет).
+
+async function getActivityState() {
+  const row = await qOne(`SELECT * FROM activity_state WHERE id = 'dashboard'`);
+  if (row) return row;
+  // Инициализация при первом запуске — считаем, что активность была только что,
+  // чтобы отчёт не улетел сразу после деплоя, пока никто ничего не трогал.
+  const now = Date.now();
+  await run(
+    `INSERT INTO activity_state (id, last_activity_ts, last_report_sent_ts, last_report_covers_from) VALUES ('dashboard', ?, NULL, ?)`,
+    [now, now]
+  );
+  return { id: 'dashboard', last_activity_ts: now, last_report_sent_ts: null, last_report_covers_from: now };
+}
+
+async function touchActivity(ts) {
+  // upsert одной строки
+  await run(
+    `INSERT INTO activity_state (id, last_activity_ts, last_report_sent_ts, last_report_covers_from) VALUES ('dashboard', ?, NULL, ?)
+     ON CONFLICT(id) DO UPDATE SET last_activity_ts = excluded.last_activity_ts`,
+    [ts, ts]
+  );
+}
+
+async function markReportSent(ts, coversFrom) {
+  await run(
+    `UPDATE activity_state SET last_report_sent_ts = ?, last_report_covers_from = ? WHERE id = 'dashboard'`,
+    [ts, coversFrom]
+  );
 }
 
 async function getDailyUptime(monitorId, days) {
@@ -465,6 +505,13 @@ async function getIncidentsForMonitor(monitorId, sinceTs, limit) {
   return q(`SELECT * FROM incidents WHERE monitor_id = ? AND started_at >= ? ORDER BY started_at DESC LIMIT ?`, [monitorId, sinceTs, limit || 50]);
 }
 
+// Все инциденты по всем мониторам за период — нужно для ночного/inactivity
+// дайджеста, где сводка строится сразу по всей системе, а не по одному
+// монитору.
+async function getAllIncidentsSince(sinceTs) {
+  return q(`SELECT * FROM incidents WHERE started_at >= ? ORDER BY started_at ASC`, [sinceTs]);
+}
+
 // --- Flapping detection ---
 // Использует уже существующую таблицу incidents — просто считает, сколько
 // отдельных падений было у монитора за последнее время. Ничего нового
@@ -552,4 +599,8 @@ module.exports = {
   getBotQueueState,
   upsertBotQueueState,
   clearBotQueueState,
+  getAllIncidentsSince,
+  getActivityState,
+  touchActivity,
+  markReportSent,
 };
