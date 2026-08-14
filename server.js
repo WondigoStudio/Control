@@ -9,6 +9,7 @@ const { runCheck } = require('./checker');
 const { diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 const { checkTrend } = require('./trendDetection');
+const { maybeSendInactivityReport, touchActivity } = require('./inactivityReport');
 const {
   initDb,
   getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
@@ -120,6 +121,19 @@ function requireAuth(req, res, next) {
 }
 
 app.use(requireAuth);
+
+// Регистрируем "активность в дашборде" для inactivity-дайджеста: любое
+// изменяющее действие (логин, ручная проверка, тумблер обслуживания,
+// правка конфига) считается признаком того, что человек сейчас смотрит
+// в систему. GET-запросы намеренно не считаются — иначе фоновый
+// автообновляющийся опрос (каждые 15с, пока открыта вкладка) никогда не
+// дал бы засчитать реальное "тишину", даже если человек давно ушёл спать.
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE'].includes(req.method) && req.path.startsWith('/api/')) {
+    touchActivity(Date.now()).catch((e) => console.error('[activity] Ошибка записи активности:', e.message));
+  }
+  next();
+});
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -390,6 +404,15 @@ cron.schedule('*/15 * * * *', () => {
       console.error(`Ошибка проверки тренда ${m.id}:`, e.message);
     }
   });
+});
+
+// --- Inactivity-дайджест ---
+// Проверяем сам факт "достаточно долго не было активности" раз в 15 минут —
+// отчёт же не по расписанию, а от порога тишины, так что часто дёргать
+// эту проверку смысла нет (максимум опоздает на 15 мин относительно
+// точного момента, когда порог пройден — это некритично).
+cron.schedule('*/15 * * * *', () => {
+  maybeSendInactivityReport(monitors).catch((e) => console.error('[inactivityReport] Ошибка:', e.message));
 });
 
 // --- Запуск: сначала инициализируем БД, потом стартуем сервер и проверки ---
