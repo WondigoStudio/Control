@@ -33,18 +33,23 @@ const WIDGET_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
-    background: rgba(11, 13, 15, 0.72);
-    backdrop-filter: blur(6px);
+    /* backdrop-filter тут бесполезен: за PiP-окном не рендерится реальный
+       контент рабочего стола, блюрить нечего — раньше это давало плоский
+       серый цвет вместо задуманного "стекла". Честный плотный тёмный фон
+       с лёгкой прозрачностью выглядит собраннее. */
+    background: rgba(10, 12, 14, 0.94);
     color: #d7dbdd;
     font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
-    font-size: 12px;
+    font-size: 13px;
     overflow: hidden;
     transition: background 0.3s ease;
+    border-top: 2px solid #22262b;
   }
   /* Инцидент где-то на мониторах — резко теряем всю "тихость": фон
      становится плотнее и заметно краснеет, плюс пульсирующая вспышка. */
   body.widget--alert {
-    background: rgba(40, 12, 12, 0.88);
+    background: rgba(35, 10, 10, 0.97);
+    border-top-color: #e35b52;
     animation: widgetFlash 1.1s ease-in-out infinite;
   }
   @keyframes widgetFlash {
@@ -65,6 +70,7 @@ const WIDGET_CSS = `
     white-space: nowrap;
     will-change: transform;
     animation: tickerScroll linear infinite;
+    padding: 0 4px;
   }
   .ticker:hover .ticker__track { animation-play-state: paused; }
   @keyframes tickerScroll {
@@ -74,22 +80,22 @@ const WIDGET_CSS = `
   .ticker__item {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 16px;
+    gap: 8px;
+    padding: 0 18px;
     flex-shrink: 0;
   }
   .ticker__dot {
-    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
     background: #8a8f94;
   }
-  .ticker__dot--up { background: #35c48c; box-shadow: 0 0 5px rgba(53,196,140,0.7); }
-  .ticker__dot--down { background: #e35b52; box-shadow: 0 0 6px rgba(227,91,82,0.9); }
-  .ticker__name { color: #d7dbdd; }
+  .ticker__dot--up { background: #35c48c; box-shadow: 0 0 6px rgba(53,196,140,0.8); }
+  .ticker__dot--down { background: #e35b52; box-shadow: 0 0 7px rgba(227,91,82,1); }
+  .ticker__name { color: #d7dbdd; font-weight: 600; }
   .ticker__name--down { color: #ff8078; font-weight: 700; }
-  .ticker__ms { color: #767d82; font-size: 11px; }
-  .ticker__sep { color: #3a4046; padding: 0 2px; }
+  .ticker__ms { color: #8a9096; font-size: 12px; }
+  .ticker__sep { color: #3a4046; padding: 0 4px; }
   .widget-empty {
-    width: 100%; text-align: center; color: #767d82; font-size: 11px;
+    width: 100%; text-align: center; color: #767d82; font-size: 12px;
   }
 `;
 
@@ -108,9 +114,12 @@ if (widgetBtn) {
       return;
     }
     try {
-      // Узкая полоска, а не окно-список — ticker рассчитан на то, чтобы
-      // висеть тонкой лентой где-нибудь у края экрана, не перекрывая контент.
-      pipWindow = await documentPictureInPicture.requestWindow({ width: 420, height: 44 });
+      // Высота с запасом: браузер сам добавляет сверху свою полоску с
+      // адресом и кнопками (~40px, размер задаёт не наш CSS, а сам PiP-чром)
+      // — если просить окно впритык под контент, эта полоска съедает почти
+      // всё, и текст обрезается снизу. 96px даёт ~55px реальной области под
+      // ticker после вычета системного заголовка.
+      pipWindow = await documentPictureInPicture.requestWindow({ width: 460, height: 96 });
     } catch (e) {
       console.error('[widget] Не удалось открыть PiP-окно:', e.message);
       return;
