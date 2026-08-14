@@ -18,44 +18,79 @@ if (logoutBtn) {
 // веб-страница/вкладка так не умеет. Поддержка: Chrome/Edge 116+.
 // PiP-окно — отдельный browsing context (своя document), поэтому стили
 // туда нужно внедрять вручную, а не полагаться на общий style.css.
+//
+// Формат — горизонтальная бегущая строка (как биржевой тикер), а не список:
+// виджет висит почти постоянно, поэтому в спокойном состоянии он должен
+// быть маленьким, тихим и полупрозрачным, и только при инциденте — резко
+// привлекать внимание вспышкой.
+//
+// Честная оговорка про "прозрачность": браузеры не дают PiP-окну быть
+// по-настоящему прозрачным сквозь рабочий стол (обои за окном видно не
+// будет) — это ограничение самого API, не наша недоработка. Делаем
+// "стеклянный" эффект (тёмный фон низкой непрозрачности + блюр контента
+// под ним внутри окна), это ближайшее доступное приближение.
 const WIDGET_CSS = `
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; }
   body {
-    background: #0b0d0f;
+    background: rgba(11, 13, 15, 0.72);
+    backdrop-filter: blur(6px);
     color: #d7dbdd;
     font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
     font-size: 12px;
     overflow: hidden;
+    transition: background 0.3s ease;
   }
-  .widget-root { display: flex; flex-direction: column; height: 100%; }
-  .widget-header {
-    padding: 8px 10px;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #767d82;
-    border-bottom: 1px solid #22262b;
-    flex-shrink: 0;
+  /* Инцидент где-то на мониторах — резко теряем всю "тихость": фон
+     становится плотнее и заметно краснеет, плюс пульсирующая вспышка. */
+  body.widget--alert {
+    background: rgba(40, 12, 12, 0.88);
+    animation: widgetFlash 1.1s ease-in-out infinite;
   }
-  .widget-list { overflow-y: auto; flex: 1; }
-  .widget-row {
+  @keyframes widgetFlash {
+    0%, 100% { box-shadow: inset 0 0 0 2px rgba(227, 91, 82, 0.15); }
+    50% { box-shadow: inset 0 0 0 2px rgba(227, 91, 82, 0.9); }
+  }
+  .ticker {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 7px 10px;
-    border-bottom: 1px solid #16191c;
   }
-  .widget-dot {
-    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  .ticker__track {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    will-change: transform;
+    animation: tickerScroll linear infinite;
+  }
+  .ticker:hover .ticker__track { animation-play-state: paused; }
+  @keyframes tickerScroll {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); } /* контент задублирован — ровно половина трека */
+  }
+  .ticker__item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px;
+    flex-shrink: 0;
+  }
+  .ticker__dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
     background: #8a8f94;
   }
-  .widget-dot--up { background: #35c48c; box-shadow: 0 0 6px rgba(53,196,140,0.6); }
-  .widget-dot--down { background: #e35b52; box-shadow: 0 0 6px rgba(227,91,82,0.6); }
-  .widget-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .widget-ms { color: #767d82; font-size: 11px; flex-shrink: 0; }
-  .widget-empty { padding: 16px 10px; color: #767d82; text-align: center; }
+  .ticker__dot--up { background: #35c48c; box-shadow: 0 0 5px rgba(53,196,140,0.7); }
+  .ticker__dot--down { background: #e35b52; box-shadow: 0 0 6px rgba(227,91,82,0.9); }
+  .ticker__name { color: #d7dbdd; }
+  .ticker__name--down { color: #ff8078; font-weight: 700; }
+  .ticker__ms { color: #767d82; font-size: 11px; }
+  .ticker__sep { color: #3a4046; padding: 0 2px; }
+  .widget-empty {
+    width: 100%; text-align: center; color: #767d82; font-size: 11px;
+  }
 `;
 
 const widgetBtn = document.getElementById('widgetBtn');
@@ -73,7 +108,9 @@ if (widgetBtn) {
       return;
     }
     try {
-      pipWindow = await documentPictureInPicture.requestWindow({ width: 260, height: 340 });
+      // Узкая полоска, а не окно-список — ticker рассчитан на то, чтобы
+      // висеть тонкой лентой где-нибудь у края экрана, не перекрывая контент.
+      pipWindow = await documentPictureInPicture.requestWindow({ width: 420, height: 44 });
     } catch (e) {
       console.error('[widget] Не удалось открыть PiP-окно:', e.message);
       return;
@@ -84,10 +121,7 @@ if (widgetBtn) {
     style.textContent = WIDGET_CSS;
     pipWindow.document.head.appendChild(style);
     pipWindow.document.body.innerHTML = `
-      <div class="widget-root">
-        <div class="widget-header">Мониторы</div>
-        <div class="widget-list" id="widgetList"><div class="widget-empty">Загрузка…</div></div>
-      </div>
+      <div class="ticker"><div class="ticker__track" id="tickerTrack"></div></div>
     `;
 
     const renderWidget = async () => {
@@ -97,26 +131,44 @@ if (widgetBtn) {
         const res = await fetch('/api/monitors');
         data = await res.json();
       } catch (e) {
-        return; // тихо пробуем на следующем тике — не хотим мигать ошибками в маленьком окне
+        return; // тихо пробуем на следующем тике — не хотим мигать ошибками в узкой полоске
       }
-      const list = pipWindow.document.getElementById('widgetList');
-      if (!list) return;
+
+      const track = pipWindow.document.getElementById('tickerTrack');
+      if (!track) return;
+
       if (!data.length) {
-        list.innerHTML = '<div class="widget-empty">Нет мониторов</div>';
+        track.style.animation = 'none';
+        track.innerHTML = '<div class="widget-empty">Нет мониторов</div>';
         return;
       }
-      list.innerHTML = data
-        .map((m) => {
-          const ms = m.status === 'up' && m.lastResponseMs != null ? `${m.lastResponseMs}ms` : (m.status === 'down' ? 'down' : '—');
-          return `
-            <div class="widget-row">
-              <span class="widget-dot widget-dot--${m.status}"></span>
-              <span class="widget-name">${escapeHtml(m.name)}</span>
-              <span class="widget-ms">${ms}</span>
-            </div>
-          `;
-        })
-        .join('');
+
+      const hasIncident = data.some((m) => m.status === 'down');
+      pipWindow.document.body.classList.toggle('widget--alert', hasIncident);
+
+      const itemHtml = (m) => {
+        const ms = m.status === 'up' && m.lastResponseMs != null ? `${m.lastResponseMs}ms` : (m.status === 'down' ? 'DOWN' : '—');
+        return `
+          <span class="ticker__item">
+            <span class="ticker__dot ticker__dot--${m.status}"></span>
+            <span class="ticker__name${m.status === 'down' ? ' ticker__name--down' : ''}">${escapeHtml(m.name)}</span>
+            <span class="ticker__ms">${ms}</span>
+          </span>
+          <span class="ticker__sep">·</span>
+        `;
+      };
+
+      // Контент дублируем дважды подряд — @keyframes едет ровно на -50% трека,
+      // и получается бесшовная бесконечная прокрутка без "скачка" в конце.
+      const single = data.map(itemHtml).join('');
+      track.innerHTML = single + single;
+
+      // Скорость — фиксированный px/сек, а не фиксированная длительность:
+      // иначе при 3 мониторах лента летит слишком быстро, а при 20 — еле ползёт.
+      const trackWidth = track.scrollWidth / 2;
+      const pxPerSecond = 40;
+      const duration = Math.max(8, trackWidth / pxPerSecond);
+      track.style.animation = `tickerScroll ${duration}s linear infinite`;
     };
 
     await renderWidget();
