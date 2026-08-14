@@ -22,6 +22,14 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', 'null'); // file:// шлёт Origin: null
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 // Список мониторов теперь хранится в Turso (таблица monitor_configs),
 // а не только в monitors.json — это позволяет добавлять/редактировать/удалять
 // мониторы через UI без правки файла и ожидания редеплоя.
