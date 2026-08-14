@@ -12,6 +12,127 @@ if (logoutBtn) {
   });
 }
 
+// --- Плавающий виджет статуса (Document Picture-in-Picture) ---
+// Настоящий always-on-top поверх ЛЮБЫХ окон ОС (не только вкладок браузера)
+// без установки отдельного приложения даёт только этот API — обычная
+// веб-страница/вкладка так не умеет. Поддержка: Chrome/Edge 116+.
+// PiP-окно — отдельный browsing context (своя document), поэтому стили
+// туда нужно внедрять вручную, а не полагаться на общий style.css.
+const WIDGET_CSS = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0b0d0f;
+    color: #d7dbdd;
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    font-size: 12px;
+    overflow: hidden;
+  }
+  .widget-root { display: flex; flex-direction: column; height: 100%; }
+  .widget-header {
+    padding: 8px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #767d82;
+    border-bottom: 1px solid #22262b;
+    flex-shrink: 0;
+  }
+  .widget-list { overflow-y: auto; flex: 1; }
+  .widget-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid #16191c;
+  }
+  .widget-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: #8a8f94;
+  }
+  .widget-dot--up { background: #35c48c; box-shadow: 0 0 6px rgba(53,196,140,0.6); }
+  .widget-dot--down { background: #e35b52; box-shadow: 0 0 6px rgba(227,91,82,0.6); }
+  .widget-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .widget-ms { color: #767d82; font-size: 11px; flex-shrink: 0; }
+  .widget-empty { padding: 16px 10px; color: #767d82; text-align: center; }
+`;
+
+const widgetBtn = document.getElementById('widgetBtn');
+let pipWindow = null;
+let widgetRefreshTimer = null;
+
+if (widgetBtn) {
+  widgetBtn.addEventListener('click', async () => {
+    if (!('documentPictureInPicture' in window)) {
+      alert('Плавающий виджет работает через Document Picture-in-Picture API — он есть только в Chrome/Edge (116+). В этом браузере функция недоступна.');
+      return;
+    }
+    if (pipWindow && !pipWindow.closed) {
+      pipWindow.focus();
+      return;
+    }
+    try {
+      pipWindow = await documentPictureInPicture.requestWindow({ width: 260, height: 340 });
+    } catch (e) {
+      console.error('[widget] Не удалось открыть PiP-окно:', e.message);
+      return;
+    }
+
+    pipWindow.document.title = 'Мониторы · Control';
+    const style = pipWindow.document.createElement('style');
+    style.textContent = WIDGET_CSS;
+    pipWindow.document.head.appendChild(style);
+    pipWindow.document.body.innerHTML = `
+      <div class="widget-root">
+        <div class="widget-header">Мониторы</div>
+        <div class="widget-list" id="widgetList"><div class="widget-empty">Загрузка…</div></div>
+      </div>
+    `;
+
+    const renderWidget = async () => {
+      if (!pipWindow || pipWindow.closed) return;
+      let data;
+      try {
+        const res = await fetch('/api/monitors');
+        data = await res.json();
+      } catch (e) {
+        return; // тихо пробуем на следующем тике — не хотим мигать ошибками в маленьком окне
+      }
+      const list = pipWindow.document.getElementById('widgetList');
+      if (!list) return;
+      if (!data.length) {
+        list.innerHTML = '<div class="widget-empty">Нет мониторов</div>';
+        return;
+      }
+      list.innerHTML = data
+        .map((m) => {
+          const ms = m.status === 'up' && m.lastResponseMs != null ? `${m.lastResponseMs}ms` : (m.status === 'down' ? 'down' : '—');
+          return `
+            <div class="widget-row">
+              <span class="widget-dot widget-dot--${m.status}"></span>
+              <span class="widget-name">${escapeHtml(m.name)}</span>
+              <span class="widget-ms">${ms}</span>
+            </div>
+          `;
+        })
+        .join('');
+    };
+
+    await renderWidget();
+    if (widgetRefreshTimer) clearInterval(widgetRefreshTimer);
+    widgetRefreshTimer = setInterval(renderWidget, 15000);
+
+    // Окно PiP может быть закрыто пользователем напрямую (крестик) —
+    // подчищаем таймер, иначе он продолжит дёргать fetch в никуда.
+    pipWindow.addEventListener('pagehide', () => {
+      if (widgetRefreshTimer) clearInterval(widgetRefreshTimer);
+      widgetRefreshTimer = null;
+      pipWindow = null;
+    });
+  });
+}
+
 // --- Управление мониторами (Этап 9) ---
 
 const monitorFormModal = document.getElementById('monitorFormModal');
