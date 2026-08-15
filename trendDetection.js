@@ -6,7 +6,7 @@
 // Incident lifecycle из checker.js, это отдельная, более ранняя сигнализация.
 
 const { getHourlyResponseBuckets, getTrendState, upsertTrendState, clearTrendState } = require('./db');
-const { notify } = require('./notifier');
+const { notify, formatNotifyTimeShort } = require('./notifier');
 
 const DEFAULTS = {
   windowHours: 4,          // за сколько часов смотрим тренд
@@ -75,7 +75,7 @@ async function checkTrend(monitor, currentStatus) {
   await upsertTrendState(monitor.id, Date.now(), baseline, ratio);
 
   const trendLines = buckets
-    .map((b) => `${new Date(b.ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}  ${b.avgMs}ms`)
+    .map((b) => `${formatNotifyTimeShort(b.ts)}  ${b.avgMs}ms`)
     .join('\n');
 
   await notify(
