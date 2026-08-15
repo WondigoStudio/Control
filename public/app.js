@@ -885,9 +885,39 @@ function renderIncidents(incidents) {
           <div class="diag-suggest">💡 ${escapeHtml(inc.diagnosis.suggestion)}</div>
         </div>
       ` : ''}
+
+      ${inc.ongoing ? `
+        <div class="incident-manual-close">
+          <button class="sort-btn close-incident-btn" data-incident-id="${inc.id}" title="Закрыть, если инцидент завис (например, из-за сбоя во время режима обслуживания) и не закрылся сам">✓ закрыть вручную</button>
+        </div>
+      ` : ''}
     </div>
   `;
   }).join('');
+
+  detailIncidents.querySelectorAll('.close-incident-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!currentMonitor) return;
+      if (!confirm(`Закрыть Incident #${btn.dataset.incidentId} вручную? Используй, только если он реально завис (например, сайт уже работает, но карточка так и висит ONGOING).`)) return;
+      btn.disabled = true;
+      btn.textContent = '⏳ закрываю...';
+      try {
+        const res = await fetch(`/api/monitors/${currentMonitor.id}/incidents/${btn.dataset.incidentId}/close`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || 'Не удалось закрыть инцидент');
+          btn.disabled = false;
+          btn.textContent = '✓ закрыть вручную';
+          return;
+        }
+        loadDetail(currentMonitor);
+      } catch (err) {
+        alert('Ошибка соединения: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = '✓ закрыть вручную';
+      }
+    });
+  });
 }
 
 // --- Zoom графика ---
