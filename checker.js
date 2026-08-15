@@ -383,6 +383,19 @@ async function runCheck(monitor) {
   const { newStatus, statusChanged, consecutiveFails, restartAttempted, recoveryAttempts, recoveryExhaustedNotified } = await updateMonitorState(monitor.id, result.ok);
 
   if (inMaintenance) {
+    // Баг: если инцидент открылся ДО включения обслуживания, а сайт
+    // восстановился ПОКА обслуживание было включено — statusChanged здесь
+    // true (down → up), но старый код делал return раньше, чем доходил до
+    // closeIncident. Инцидент оставался висеть "ONGOING" навсегда, а
+    // следующая проверка после выключения обслуживания уже не видела
+    // смены статуса (он молча обновился в updateMonitorState выше) и
+    // закрыть его тоже не могла. Поэтому закрываем зависший инцидент даже
+    // в режиме обслуживания — молча, без уведомления — а вот открывать
+    // новые инциденты/слать уведомления/пытаться восстановить всё ещё не
+    // должны, ради чего maintenance mode и существует.
+    if (newStatus === 'up' && statusChanged && prevState && prevState.current_incident_id) {
+      await closeIncident(monitor.id, prevState.current_incident_id, Date.now());
+    }
     return result;
   }
 
