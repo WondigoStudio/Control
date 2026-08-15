@@ -475,6 +475,7 @@ function renderGrid(data) {
         <span class="badge ${m.status}">${statusLabel(m.status)}</span>
       </div>
       ${m.ssl ? sslBadgeHtml(m.ssl) : ''}
+      ${m.flapping ? '<div class="ssl-mini flapping-badge" title="Монитор нестабилен: несколько падений подряд за короткое время. Обычные уведомления о каждом падении/восстановлении временно приглушены — придёт одно сводное письмо, когда всё уляжется.">📶 нестабилен (flapping) · уведомления приглушены</div>' : ''}
       ${m.hasAutoRestart ? '<div class="ssl-mini" style="color:var(--up);">🔁 автоперезапуск настроен</div>' : ''}
       ${m.maintenance && m.maintenance.enabled ? '<div class="ssl-mini" style="color:var(--accent);">🔧 на обслуживании</div>' : ''}
       <div class="card__stats">
@@ -531,6 +532,7 @@ async function loadDetail(m) {
   detailMeta.innerHTML = `
     <span>статус: ${statusLabel(m.status)}</span>
     <span>последняя проверка: ${fmtTime(m.lastCheckedAt)}</span>
+    ${m.flapping ? '<span style="color:var(--accent);" title="Несколько падений подряд за короткое время. Обычные уведомления о падении/восстановлении временно приглушены — придёт одно сводное письмо, когда всё уляжется.">📶 нестабилен (flapping) · уведомления приглушены</span>' : ''}
   `;
 
   const maintenanceBtn = document.getElementById('maintenanceBtn');
