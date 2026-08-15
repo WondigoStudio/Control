@@ -16,7 +16,7 @@ const {
   getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary,
   getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
   getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
-  getState,
+  getState, closeIncidentManually,
 } = require('./db');
 
 const app = express();
@@ -270,6 +270,22 @@ app.get('/api/monitors/:id/incidents', async (req, res) => {
   }));
 
   res.json(incidents);
+});
+
+app.post('/api/monitors/:id/incidents/:incidentId/close', async (req, res) => {
+  // Ручное закрытие зависшего инцидента — на случай багов вроде "инцидент
+  // восстановился во время режима обслуживания и остался ONGOING навсегда"
+  // (см. фикс в checker.js), или просто если что-то ещё пошло не так и
+  // инцидент не закрылся сам. Показывается в UI только для ONGOING.
+  const incidentId = parseInt(req.params.incidentId, 10);
+  if (!Number.isInteger(incidentId)) {
+    return res.status(400).json({ error: 'Некорректный id инцидента' });
+  }
+  const closed = await closeIncidentManually(req.params.id, incidentId);
+  if (!closed) {
+    return res.status(404).json({ error: 'Инцидент не найден, чужой монитор, или уже закрыт' });
+  }
+  res.json({ ok: true });
 });
 
 app.get('/api/monitors/:id/stats', async (req, res) => {
