@@ -492,6 +492,22 @@ async function closeIncident(monitorId, incidentId, endedAt) {
   await run(`UPDATE monitor_state SET current_incident_id = NULL WHERE monitor_id = ?`, [monitorId]);
 }
 
+// Ручное закрытие зависшего инцидента из UI (кнопка "закрыть вручную" на
+// ONGOING-инциденте). В отличие от closeIncident() выше, не трогает
+// monitor_state.current_incident_id — тот мог уже указывать на другой,
+// более свежий инцидент, если баг/рассинхрон случился давно и монитор с тех
+// пор успел упасть и подняться заново. Дополнительно проверяем monitor_id,
+// чтобы нельзя было закрыть чужой инцидент, дёрнув другой id в запросе.
+async function closeIncidentManually(monitorId, incidentId) {
+  const row = await qOne(`SELECT id FROM incidents WHERE id = ? AND monitor_id = ? AND status != 'recovered'`, [incidentId, monitorId]);
+  if (!row) return false;
+  await run(`UPDATE incidents SET status = 'recovered', ended_at = ? WHERE id = ?`, [Date.now(), incidentId]);
+  // Если это и есть текущий "висящий" инцидент монитора — снимаем ссылку,
+  // иначе следующий реальный сбой не сможет открыть новый инцидент.
+  await run(`UPDATE monitor_state SET current_incident_id = NULL WHERE monitor_id = ? AND current_incident_id = ?`, [monitorId, incidentId]);
+  return true;
+}
+
 async function markIncidentNotified(incidentId) {
   if (!incidentId) return;
   await run(`UPDATE incidents SET notification_sent = 1 WHERE id = ?`, [incidentId]);
@@ -588,6 +604,7 @@ module.exports = {
   getIncidentEvidence,
   incrementIncidentChecks,
   closeIncident,
+  closeIncidentManually,
   markIncidentNotified,
   markIncidentRecovery,
   getIncidentsForMonitor,
