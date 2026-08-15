@@ -1092,7 +1092,7 @@ function drawChart(history) {
   overlay.style.cursor = 'crosshair';
   detailChart.appendChild(overlay);
 
-  // --- Выделение отрезка мышью для увеличения (zoom) ---
+  // --- Выделение отрезка мышью/пальцем для увеличения (zoom) ---
   const selectionRect = document.createElementNS(svgNS, 'rect');
   selectionRect.setAttribute('y', padTop);
   selectionRect.setAttribute('height', plotH);
@@ -1111,33 +1111,13 @@ function drawChart(history) {
     return Math.max(0, Math.min(history.length - 1, Math.round((svgX - padLeft) / stepX)));
   }
 
-  overlay.addEventListener('mousedown', (evt) => {
-    isDragging = true;
-    dragStartIdx = xToIndex(evt.clientX);
-  });
-
-  if (chartMouseUpHandler) window.removeEventListener('mouseup', chartMouseUpHandler);
-  chartMouseUpHandler = (evt) => {
-    if (!isDragging) return;
-    isDragging = false;
-    selectionRect.style.display = 'none';
-    if (dragStartIdx === null) return;
-    const endIdx = xToIndex(evt.clientX);
-    if (Math.abs(endIdx - dragStartIdx) >= 2) {
-      zoomChartToRange(dragStartIdx, endIdx);
-    }
-    dragStartIdx = null;
-  };
-  window.addEventListener('mouseup', chartMouseUpHandler);
-
-  overlay.addEventListener('mousemove', (evt) => {
-    const rect = detailChart.getBoundingClientRect();
-    const svgX = ((evt.clientX - rect.left) / rect.width) * w;
-    const idx = Math.max(0, Math.min(history.length - 1, Math.round((svgX - padLeft) / stepX)));
+  // Общая логика показа курсора-подсказки и, если тащим — прямоугольника
+  // выделения. Используется и мышью (mousemove), и пальцем (touchmove).
+  function updatePointer(clientX) {
+    const idx = xToIndex(clientX);
     const item = history[idx];
     if (!item) return;
 
-    // Если тащим мышью с зажатой кнопкой — рисуем прямоугольник выделения
     if (isDragging && dragStartIdx !== null) {
       const startX = padLeft + dragStartIdx * stepX;
       const currentX = padLeft + idx * stepX;
@@ -1174,13 +1154,86 @@ function drawChart(history) {
     hoverText.setAttribute('x', boxX + 6);
     hoverText.setAttribute('y', padTop + 21);
     hoverText.style.display = '';
-  });
 
-  overlay.addEventListener('mouseleave', () => {
+    return idx;
+  }
+
+  function hidePointer() {
     hoverLine.style.display = 'none';
     hoverDot.style.display = 'none';
     hoverBg.style.display = 'none';
     hoverText.style.display = 'none';
+  }
+
+  function endDrag(clientX) {
+    isDragging = false;
+    selectionRect.style.display = 'none';
+    if (dragStartIdx === null) return;
+    const endIdx = xToIndex(clientX);
+    if (Math.abs(endIdx - dragStartIdx) >= 2) {
+      zoomChartToRange(dragStartIdx, endIdx);
+    }
+    dragStartIdx = null;
+  }
+
+  // --- Мышь (десктоп) ---
+  overlay.addEventListener('mousedown', (evt) => {
+    isDragging = true;
+    dragStartIdx = xToIndex(evt.clientX);
+  });
+
+  if (chartMouseUpHandler) window.removeEventListener('mouseup', chartMouseUpHandler);
+  chartMouseUpHandler = (evt) => {
+    if (!isDragging) return;
+    endDrag(evt.clientX);
+  };
+  window.addEventListener('mouseup', chartMouseUpHandler);
+
+  overlay.addEventListener('mousemove', (evt) => updatePointer(evt.clientX));
+  overlay.addEventListener('mouseleave', hidePointer);
+
+  // --- Тач (телефоны/планшеты) ---
+  // touch-action: none отключает скролл страницы пальцем прямо на графике,
+  // иначе браузер перехватывает жест как прокрутку и зум не сработает.
+  overlay.style.touchAction = 'none';
+
+  overlay.addEventListener('touchstart', (evt) => {
+    if (!evt.touches.length) return;
+    isDragging = true;
+    dragStartIdx = xToIndex(evt.touches[0].clientX);
+    updatePointer(evt.touches[0].clientX);
+    evt.preventDefault();
+  }, { passive: false });
+
+  overlay.addEventListener('touchmove', (evt) => {
+    if (!evt.touches.length) return;
+    updatePointer(evt.touches[0].clientX);
+    evt.preventDefault();
+  }, { passive: false });
+
+  overlay.addEventListener('touchend', (evt) => {
+    // clientX финальной точки берём из changedTouches — в touchend
+    // сам палец уже отсутствует в evt.touches
+    const clientX = evt.changedTouches && evt.changedTouches[0]
+      ? evt.changedTouches[0].clientX
+      : null;
+    if (clientX !== null) {
+      endDrag(clientX);
+    } else {
+      isDragging = false;
+      selectionRect.style.display = 'none';
+      dragStartIdx = null;
+    }
+    // Прячем подсказку чуть погодя, чтобы успеть увидеть значение после тапа,
+    // но не оставлять курсор "залипшим" на графике навсегда
+    setTimeout(hidePointer, 1200);
+  });
+
+  overlay.addEventListener('touchcancel', () => {
+    isDragging = false;
+    selectionRect.style.display = 'none';
+    dragStartIdx = null;
+    hidePointer();
   });
 }
 
