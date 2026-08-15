@@ -2,7 +2,7 @@ const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
 const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, setDomainStatus, getDomainStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, saveIncidentEvidence, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes, getBotQueueState, upsertBotQueueState, clearBotQueueState } = require('./db');
-const { notify } = require('./notifier');
+const { notify, formatNotifyTime } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 const { timingFetch } = require('./timingFetch');
@@ -281,7 +281,7 @@ async function restartViaRenderHook(monitor, deployHookUrl, attemptNumber, maxAt
     await notify(
       ok ? `🔁 Автоперезапуск${attemptLabel}: ${monitor.name}` : `⚠️ Не удалось перезапустить ${monitor.name}${attemptLabel}`,
       ok
-        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через Render deploy hook${attemptLabel}.\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        ? `Монитор "${monitor.name}" упал несколько проверок подряд. Отправлен запрос на автоперезапуск через Render deploy hook${attemptLabel}.\nВремя: ${formatNotifyTime()}`
         : `Попытка автоперезапуска "${monitor.name}"${attemptLabel} не удалась (HTTP ${res.status}).\nПроверь deploy hook вручную.`
     );
   } catch (e) {
@@ -475,14 +475,14 @@ async function runCheck(monitor) {
         }
         await notify(
           `🔴 ${monitor.name} недоступен`,
-          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${new Date().toLocaleString('ru-RU')}${evidenceText}`
+          `Монитор "${monitor.name}" стал недоступен.\n\nОшибка: ${result.error || 'нет ответа'}\nВремя: ${formatNotifyTime()}${evidenceText}`
         );
       }
       await markIncidentNotified(currentIncidentId);
     } else {
       await notify(
         `🟢 ${monitor.name} снова доступен`,
-        `Монитор "${monitor.name}" восстановился.\n\nВремя отклика: ${result.responseMs} мс\nВремя: ${new Date().toLocaleString('ru-RU')}`
+        `Монитор "${monitor.name}" восстановился.\n\nВремя отклика: ${result.responseMs} мс\nВремя: ${formatNotifyTime()}`
       );
     }
   }
