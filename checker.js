@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 const tls = require('tls');
 const { URL } = require('url');
-const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, setDomainStatus, getDomainStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, saveIncidentEvidence, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, getRecentResponseSizes, getBotQueueState, upsertBotQueueState, clearBotQueueState } = require('./db');
+const { insertCheck, getState, updateMonitorState, markRestartAttempted, logRestartAttempt, setSSLStatus, getSSLStatus, setDomainStatus, getDomainStatus, saveMultiLocationResult, incrementRecoveryAttempts, markRecoveryExhaustedNotified, countRecentRestarts, getRestartLog, openIncident, saveIncidentEvidence, incrementIncidentChecks, closeIncident, markIncidentNotified, markIncidentRecovery, countRecentIncidents, markFlappingNotified, setFlappingActive, getRecentResponseSizes, getBotQueueState, upsertBotQueueState, clearBotQueueState } = require('./db');
 const { notify, formatNotifyTime } = require('./notifier');
 const { detectSuspensionSignature, diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
@@ -453,13 +453,18 @@ async function runCheck(monitor) {
   if (statusChanged && prevState) {
     if (newStatus === 'down') {
       if (isFlapping) {
+        // Помечаем монитор как "флаппящий" сразу — это читает и recovery-ветка
+        // ниже (чтобы не слать "снова доступен" на каждый короткий подъём),
+        // и последующие тики (чтобы понять, когда флаппинг закончился).
+        await setFlappingActive(monitor.id, true);
+
         const windowMs = flapping.windowMinutes * 60 * 1000;
         const lastFlapNotified = prevState.last_flapping_notified_ts || 0;
         if (Date.now() - lastFlapNotified > windowMs) {
           await markFlappingNotified(monitor.id);
           await notify(
             `⚠️ ${monitor.name} нестабилен (flapping)`,
-            `Монитор "${monitor.name}" переключился между "работает" и "недоступен" ${recentIncidentsCount} раз за последние ${flapping.windowMinutes} минут.\n\nЭто похоже на нестабильность сервиса, а не единичное падение. Обычные уведомления о каждом отдельном падении временно не отправляются, пока флаппинг продолжается — чтобы не заваливать почту.`
+            `Монитор "${monitor.name}" переключился между "работает" и "недоступен" ${recentIncidentsCount} раз за последние ${flapping.windowMinutes} минут.\n\nЭто похоже на нестабильность сервиса, а не единичное падение. Обычные уведомления о каждом отдельном падении и восстановлении временно не отправляются, пока флаппинг продолжается — чтобы не заваливать почту. Пришлём отдельное уведомление, когда всё стабилизируется.`
           );
         }
         // при флаппинге обычное "упал" не шлём — только сводное уведомление выше
@@ -479,10 +484,32 @@ async function runCheck(monitor) {
         );
       }
       await markIncidentNotified(currentIncidentId);
-    } else {
+    } else if (!prevState.flapping_active) {
+      // Обычное восстановление — шлём как раньше. Если же монитор в этот
+      // момент флаппит (prevState.flapping_active), намеренно молчим: см.
+      // блок "Flapping resolution" ниже, который пришлёт одно сводное
+      // уведомление, когда падения по-настоящему прекратятся.
       await notify(
         `🟢 ${monitor.name} снова доступен`,
         `Монитор "${monitor.name}" восстановился.\n\nВремя отклика: ${result.responseMs} мс\nВремя: ${formatNotifyTime()}`
+      );
+    }
+  }
+
+  // --- Flapping resolution ---
+  // Пока флаг flapping_active включён, обычные уведомления о падении/
+  // восстановлении подавлены (см. выше). Здесь на каждом успешном тике
+  // проверяем, не утихло ли всё — если новых падений не было весь
+  // windowMinutes, флаппинг считаем законченным и шлём одно финальное
+  // уведомление вместо потока "упал/поднялся" по каждому колебанию.
+  if (newStatus === 'up' && flapping.enabled && prevState && prevState.flapping_active) {
+    const windowMs = flapping.windowMinutes * 60 * 1000;
+    const recentCount = await countRecentIncidents(monitor.id, Date.now() - windowMs);
+    if (recentCount === 0) {
+      await setFlappingActive(monitor.id, false);
+      await notify(
+        `✅ ${monitor.name} стабилизировался`,
+        `Монитор "${monitor.name}" не падал последние ${flapping.windowMinutes} минут — флаппинг прекратился, уведомления вернулись в обычный режим.\n\nВремя: ${formatNotifyTime()}`
       );
     }
   }
