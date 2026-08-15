@@ -401,6 +401,10 @@ html, body {
   color: var(--accent);
   margin: 8px 0 0;
 }
+.flapping-badge {
+  color: var(--accent);
+  cursor: help;
+}
 
 .ssl-box {
   font-family: var(--mono);
