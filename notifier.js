@@ -6,6 +6,28 @@ const NOTIFY_EMAIL_TO = process.env.NOTIFY_EMAIL_TO;
 // он работает без верификации собственного домена.
 const NOTIFY_EMAIL_FROM = process.env.NOTIFY_EMAIL_FROM || 'Status Monitor <onboarding@resend.dev>';
 
+// Часовой пояс для времени внутри уведомлений (Telegram/email). Без этого
+// new Date().toLocaleString() берёт системный часовой пояс СЕРВЕРА
+// (на большинстве хостингов — UTC), а не пояс пользователя, из-за чего
+// время в уведомлениях "кардинально отличается" от реального.
+// Задаётся в .env, например: NOTIFY_TZ=Asia/Almaty
+const NOTIFY_TZ = process.env.NOTIFY_TZ || 'UTC';
+
+// Единая точка форматирования времени для всех текстов уведомлений —
+// checker.js, trendDetection.js, inactivityReport.js и сам notifier.js
+// должны использовать именно её, а не голый new Date().toLocaleString().
+function formatNotifyTime(ts) {
+  return new Date(ts ?? Date.now()).toLocaleString('ru-RU', { timeZone: NOTIFY_TZ });
+}
+
+function formatNotifyTimeShort(ts) {
+  return new Date(ts ?? Date.now()).toLocaleTimeString('ru-RU', {
+    timeZone: NOTIFY_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 // Определяем тип уведомления по эмодзи в начале subject — так уже
 // помечены все вызовы notify() по коду (🔴 недоступен, ✅ восстановлен,
 // ⚠️ предупреждение), переиспользуем это как единственный источник
@@ -60,7 +82,7 @@ function renderEmailHtml(subject, text) {
       ${renderBody(text)}
     </div>
     <div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;color:#94a3b8;">
-      Control · ${new Date().toLocaleString('ru-RU')}
+      Control · ${formatNotifyTime()}
     </div>
   </div>
 </body>
@@ -101,4 +123,4 @@ async function notify(subject, text) {
   }
 }
 
-module.exports = { notify };
+module.exports = { notify, formatNotifyTime, formatNotifyTimeShort };
