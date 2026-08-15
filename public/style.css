@@ -781,6 +781,13 @@ html, body {
   padding-top: 10px;
   border-top: 1px solid var(--panel-border);
 }
+.incident-manual-close {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+  text-align: right;
+}
+.close-incident-btn { font-size: 10px; padding: 4px 10px; }
 .incident-card .diag-explain {
   color: var(--text-dim);
   margin-top: 0;
