@@ -130,6 +130,7 @@ async function initDb() {
     `ALTER TABLE monitor_state ADD COLUMN recovery_exhausted_notified INTEGER DEFAULT 0`,
     `ALTER TABLE monitor_state ADD COLUMN last_flapping_notified_ts INTEGER`,
     `ALTER TABLE monitor_state ADD COLUMN current_incident_id INTEGER`,
+    `ALTER TABLE monitor_state ADD COLUMN flapping_active INTEGER DEFAULT 0`,
     `ALTER TABLE restart_log ADD COLUMN incident_id INTEGER`,
     `ALTER TABLE incidents ADD COLUMN evidence_json TEXT`,
   ];
@@ -526,6 +527,10 @@ async function markFlappingNotified(monitorId) {
   await run(`UPDATE monitor_state SET last_flapping_notified_ts = ? WHERE monitor_id = ?`, [Date.now(), monitorId]);
 }
 
+async function setFlappingActive(monitorId, active) {
+  await run(`UPDATE monitor_state SET flapping_active = ? WHERE monitor_id = ?`, [active ? 1 : 0, monitorId]);
+}
+
 // --- Конфигурация мониторов (для UI управления, Этап 9) ---
 
 async function getAllMonitorConfigs() {
@@ -588,6 +593,7 @@ module.exports = {
   getIncidentsForMonitor,
   countRecentIncidents,
   markFlappingNotified,
+  setFlappingActive,
   getAllMonitorConfigs,
   upsertMonitorConfig,
   deleteMonitorConfig,
