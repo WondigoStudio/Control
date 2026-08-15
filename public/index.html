@@ -32,7 +32,7 @@
 
   <div class="detail" id="monitorFormModal" hidden>
     <div class="detail__panel">
-      <button class="detail__close" id="monitorFormClose">×</button>
+      <button class="detail__close detail__close--floating" id="monitorFormClose">×</button>
       <h2 id="monitorFormTitle">Новый монитор</h2>
 
       <form id="monitorForm">
@@ -161,9 +161,11 @@
 
   <div class="detail" id="detail" hidden>
     <div class="detail__panel">
-      <button class="detail__close" id="detailClose">×</button>
-      <button class="sort-btn edit-monitor-btn" id="editMonitorBtn">✏️ редактировать</button>
-      <button class="sort-btn maintenance-btn" id="maintenanceBtn">🔧 обслуживание</button>
+      <div class="detail__actions">
+        <button class="sort-btn edit-monitor-btn" id="editMonitorBtn">✏️ редактировать</button>
+        <button class="sort-btn maintenance-btn" id="maintenanceBtn">🔧 обслуживание</button>
+        <button class="detail__close" id="detailClose">×</button>
+      </div>
       <h2 id="detailTitle">—</h2>
       <div class="detail__row" id="detailMeta"></div>
 
