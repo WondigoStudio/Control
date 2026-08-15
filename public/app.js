@@ -596,6 +596,7 @@ function renderLocations(data) {
   const ageMin = Math.round((Date.now() - data.ts) / 60000);
   box.innerHTML = `
     <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin:8px 0;">Последняя проверка: ${ageMin < 1 ? 'только что' : ageMin + ' мин назад'}</div>
+    <div id="locationsChart"></div>
     <div class="loc-grid">
       ${data.results.map((r) => `
         <div class="loc-cell ${r.ok === true ? 'loc-ok' : r.ok === false ? 'loc-down' : 'loc-unknown'}">
@@ -605,6 +606,98 @@ function renderLocations(data) {
       `).join('')}
     </div>
   `;
+  drawLocationsChart(data.results);
+}
+
+// Горизонтальный бар-чарт: время ответа из каждой локации на одном графике,
+// отсортировано от самой быстрой ноды к самой медленной/недоступной.
+function drawLocationsChart(results) {
+  const host = document.getElementById('locationsChart');
+  if (!host) return;
+
+  const rows = [...results].sort((a, b) => {
+    // недоступные — в конец, среди доступных — по возрастанию времени
+    if (a.ok !== b.ok) return a.ok === true ? -1 : b.ok === true ? 1 : 0;
+    if (a.ok === true) return (a.responseMs || 0) - (b.responseMs || 0);
+    return 0;
+  });
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const rowH = 26;
+  const padTop = 8;
+  const padBottom = 8;
+  const padLeft = 8;
+  const padRight = 64; // место под подпись значения справа от бара
+  const labelW = 150; // ширина зоны под название локации слева
+  const w = 560;
+  const h = padTop + padBottom + rows.length * rowH;
+  const plotW = w - padLeft - labelW - padRight;
+
+  const maxMs = Math.max(...rows.filter((r) => r.ok === true).map((r) => r.responseMs || 0), 1);
+  const niceMax = maxMs * 1.15;
+
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', h);
+  svg.style.fontFamily = 'var(--mono)';
+
+  rows.forEach((r, i) => {
+    const y = padTop + i * rowH;
+    const barH = rowH - 8;
+
+    const label = document.createElementNS(svgNS, 'text');
+    label.setAttribute('x', padLeft);
+    label.setAttribute('y', y + barH / 2 + 4);
+    label.setAttribute('font-size', '10');
+    label.setAttribute('fill', 'var(--text-dim)');
+    label.textContent = r.label.length > 24 ? r.label.slice(0, 23) + '…' : r.label;
+    svg.appendChild(label);
+
+    const barX = padLeft + labelW;
+    const color = r.ok === true ? 'var(--up)' : r.ok === false ? 'var(--down)' : 'var(--unknown)';
+
+    if (r.ok === true) {
+      const barW = Math.max((r.responseMs / niceMax) * plotW, 2);
+      const rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', barX);
+      rect.setAttribute('y', y);
+      rect.setAttribute('width', barW);
+      rect.setAttribute('height', barH);
+      rect.setAttribute('rx', 3);
+      rect.setAttribute('fill', color);
+      svg.appendChild(rect);
+
+      const valueText = document.createElementNS(svgNS, 'text');
+      valueText.setAttribute('x', barX + barW + 6);
+      valueText.setAttribute('y', y + barH / 2 + 4);
+      valueText.setAttribute('font-size', '10');
+      valueText.setAttribute('fill', 'var(--text)');
+      valueText.textContent = `${r.responseMs} мс`;
+      svg.appendChild(valueText);
+    } else {
+      // недоступна/нет данных — тонкая полоска-маркер вместо бара
+      const rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', barX);
+      rect.setAttribute('y', y);
+      rect.setAttribute('width', 6);
+      rect.setAttribute('height', barH);
+      rect.setAttribute('rx', 2);
+      rect.setAttribute('fill', color);
+      svg.appendChild(rect);
+
+      const valueText = document.createElementNS(svgNS, 'text');
+      valueText.setAttribute('x', barX + 14);
+      valueText.setAttribute('y', y + barH / 2 + 4);
+      valueText.setAttribute('font-size', '10');
+      valueText.setAttribute('fill', color);
+      valueText.textContent = r.ok === false ? 'недоступен' : 'нет данных';
+      svg.appendChild(valueText);
+    }
+  });
+
+  host.innerHTML = '';
+  host.appendChild(svg);
 }
 
 document.getElementById('checkLocationsBtn').addEventListener('click', async () => {
