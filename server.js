@@ -158,11 +158,12 @@ app.get('/api/monitors', async (req, res) => {
       // они независимы друг от друга, поэтому распараллеливаем через
       // Promise.all: 4 круговых обращения к БД на монитор превращаются в 1
       // по времени ожидания, а не в 4 подряд.
-      const [last, ssl, uptime24h, uptime7d] = await Promise.all([
+      const [last, ssl, uptime24h, uptime7d, state] = await Promise.all([
         getLastCheck(m.id),
         getSSLStatus(m.id),
         getUptimePercent(m.id, now - day),
         getUptimePercent(m.id, now - week),
+        getState(m.id),
       ]);
       return {
         id: m.id,
@@ -183,6 +184,11 @@ app.get('/api/monitors', async (req, res) => {
           ? { enabled: true, until: m.maintenance.until }
           : { enabled: false, until: null },
         recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
+        // Пока флаг включён, обычные уведомления о падении/восстановлении
+        // подавлены (см. checker.js) — на дашборде это иначе никак не видно,
+        // и без пометки непонятно, почему по факту были падения, а письма
+        // не пришли.
+        flapping: !!(state && state.flapping_active),
       };
     })
   );
