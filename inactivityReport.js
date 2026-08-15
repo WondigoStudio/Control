@@ -12,7 +12,7 @@
 // touchActivity() из server.js на соответствующих POST/PUT/DELETE роутах.
 
 const { getActivityState, touchActivity, markReportSent, getAllIncidentsSince, getState } = require('./db');
-const { notify } = require('./notifier');
+const { notify, formatNotifyTime } = require('./notifier');
 
 const INACTIVITY_THRESHOLD_MS = (Number(process.env.INACTIVITY_REPORT_HOURS) || 6) * 60 * 60 * 1000;
 
@@ -33,7 +33,7 @@ async function buildReportText(monitors, sinceTs, now) {
   const ongoing = incidents.filter((i) => i.status !== 'recovered');
 
   const lines = [];
-  const periodLabel = `${new Date(sinceTs).toLocaleString('ru-RU')} — ${new Date(now).toLocaleString('ru-RU')}`;
+  const periodLabel = `${formatNotifyTime(sinceTs)} — ${formatNotifyTime(now)}`;
   lines.push(`Период: ${periodLabel}`);
   lines.push('');
 
