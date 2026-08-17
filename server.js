@@ -154,42 +154,57 @@ app.get('/api/monitors', async (req, res) => {
 
   let data = await Promise.all(
     monitors.filter((m) => m.type !== 'reminder').map(async (m) => {
-      // Раньше эти 4 запроса шли последовательно (await один за другим) —
-      // они независимы друг от друга, поэтому распараллеливаем через
-      // Promise.all: 4 круговых обращения к БД на монитор превращаются в 1
-      // по времени ожидания, а не в 4 подряд.
-      const [last, ssl, uptime24h, uptime7d, state] = await Promise.all([
-        getLastCheck(m.id),
-        getSSLStatus(m.id),
-        getUptimePercent(m.id, now - day),
-        getUptimePercent(m.id, now - week),
-        getState(m.id),
-      ]);
-      return {
-        id: m.id,
-        name: m.name,
-        type: m.type,
-        target: m.url || m.name,
-        status: last ? (last.ok ? 'up' : 'down') : 'unknown',
-        lastResponseMs: last ? last.response_ms : null,
-        lastCheckedAt: last ? last.ts : null,
-        lastError: last ? last.error : null,
-        lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
-        hosting: m.hosting || 'other',
-        uptime24h,
-        uptime7d,
-        ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
-        hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
-        maintenance: (m.maintenance && m.maintenance.enabled && (!m.maintenance.until || Date.now() < m.maintenance.until))
-          ? { enabled: true, until: m.maintenance.until }
-          : { enabled: false, until: null },
-        recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
-        // Пока флаг включён, обычные уведомления о падении/восстановлении
-        // подавлены (см. checker.js) — на дашборде это иначе никак не видно,
-        // и без пометки непонятно, почему по факту были падения, а письма
-        // не пришли.
-        flapping: !!(state && state.flapping_active),
-      };
+      try {
+        const [last, ssl, uptime24h, uptime7d, state] = await Promise.all([
+          getLastCheck(m.id),
+          getSSLStatus(m.id),
+          getUptimePercent(m.id, now - day),
+          getUptimePercent(m.id, now - week),
+          getState(m.id),
+        ]);
+        return {
+          id: m.id,
+          name: m.name,
+          type: m.type,
+          target: m.url || m.name,
+          status: last ? (last.ok ? 'up' : 'down') : 'unknown',
+          lastResponseMs: last ? last.response_ms : null,
+          lastCheckedAt: last ? last.ts : null,
+          lastError: last ? last.error : null,
+          lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
+          hosting: m.hosting || 'other',
+          uptime24h,
+          uptime7d,
+          ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
+          hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
+          maintenance: (m.maintenance && m.maintenance.enabled && (!m.maintenance.until || Date.now() < m.maintenance.until))
+            ? { enabled: true, until: m.maintenance.until }
+            : { enabled: false, until: null },
+          recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
+          flapping: !!(state && state.flapping_active),
+        };
+      } catch (e) {
+        console.error(`[api/monitors] Ошибка получения данных для монитора "${m.id}":`, e.message);
+        return {
+          id: m.id,
+          name: m.name,
+          type: m.type,
+          target: m.url || m.name,
+          status: 'unknown',
+          lastResponseMs: null,
+          lastCheckedAt: null,
+          lastError: 'Ошибка получения данных из БД',
+          lastErrorDiagnosis: null,
+          hosting: m.hosting || 'other',
+          uptime24h: null,
+          uptime7d: null,
+          ssl: null,
+          hasAutoRestart: false,
+          maintenance: { enabled: false, until: null },
+          recoveryProvider: 'none',
+          flapping: false,
+        };
+      }
     })
   );
 
