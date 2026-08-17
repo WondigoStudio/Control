@@ -13,8 +13,13 @@ const client = createClient({
 });
 
 async function q(sql, args) {
-  const res = await client.execute({ sql, args: args || [] });
-  return res.rows;
+  try {
+    const res = await client.execute({ sql, args: args || [] });
+    return res.rows;
+  } catch (e) {
+    console.error('[db] Query failed:', sql, '| args:', JSON.stringify(args), '| error:', e.message);
+    throw e;
+  }
 }
 
 async function qOne(sql, args) {
