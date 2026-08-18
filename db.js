@@ -1,25 +1,45 @@
-const { createClient } = require('@libsql/client');
+const { Pool, types } = require('pg');
 
-if (!process.env.TURSO_DATABASE_URL || !process.env.TURSO_AUTH_TOKEN) {
+// pg по умолчанию возвращает BIGINT (OID 20) как строку — чтобы не терять
+// точность за пределами Number.MAX_SAFE_INTEGER. Наши BIGINT-колонки — это
+// ts в миллисекундах эпохи (~1.7e12 сейчас, безопасно вплоть до года
+// 287396) и inc id — с запасом в пределах safe integer. Без этой настройки
+// весь код ниже (new Date(ts), арифметика с датами и т.д.) получал бы
+// строки там, где раньше (Turso/SQLite) были числа, и часть мест сломалась
+// бы тихо — например, new Date('1787033560876') не парсится как эпоха.
+types.setTypeParser(20, (val) => parseInt(val, 10));
+
+// Бесплатный Neon Postgres вместо Turso/локального SQLite: у Neon нет
+// метрики row-read (в отличие от Turso) и нет проблемы "файл стирается при
+// каждом засыпании контейнера" (в отличие от локального SQLite на Render
+// Free — там ephemeral filesystem теряется при каждом spin-down простоя,
+// не только при деплое, см. https://render.com/docs/free).
+if (!process.env.DATABASE_URL) {
   throw new Error(
-    'Не заданы TURSO_DATABASE_URL и/или TURSO_AUTH_TOKEN в переменных окружения. ' +
-    'Без них база данных работать не может — см. README о настройке Turso.'
+    'Не задан DATABASE_URL в переменных окружения. ' +
+    'Создай бесплатную базу на neon.tech и укажи connection string сюда. См. README.'
   );
 }
 
-const client = createClient({
-  url: process.env.TURSO_DATABASE_URL,
-  authToken: process.env.TURSO_AUTH_TOKEN,
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // Neon (и большинство облачных Postgres) требует TLS; rejectUnauthorized
+  // false — потому что у Neon self-signed цепочка через их прокси, это
+  // стандартная рекомендация из их же документации для node-postgres.
+  ssl: { rejectUnauthorized: false },
 });
 
+// Все функции ниже по файлу написаны с плейсхолдерами `?` (наследие от
+// SQLite/libSQL) — конвертируем в позиционные $1, $2... для pg на лету,
+// чтобы не переписывать вручную полсотни SQL-запросов ниже.
+function toPgQuery(sql) {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
+}
+
 async function q(sql, args) {
-  try {
-    const res = await client.execute({ sql, args: args || [] });
-    return res.rows;
-  } catch (e) {
-    console.error('[db] Query failed:', sql, '| args:', JSON.stringify(args), '| error:', e.message);
-    throw e;
-  }
+  const res = await pool.query(toPgQuery(sql), args || []);
+  return res.rows;
 }
 
 async function qOne(sql, args) {
@@ -28,126 +48,121 @@ async function qOne(sql, args) {
 }
 
 async function run(sql, args) {
-  return client.execute({ sql, args: args || [] });
+  return pool.query(toPgQuery(sql), args || []);
 }
 
 async function initDb() {
-  await client.batch(
-    [
-      `CREATE TABLE IF NOT EXISTS checks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        monitor_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        ok INTEGER NOT NULL,
-        response_ms INTEGER,
-        status_code INTEGER,
-        error TEXT
-      )`,
-      `CREATE INDEX IF NOT EXISTS idx_checks_monitor_ts ON checks(monitor_id, ts)`,
-      `CREATE TABLE IF NOT EXISTS monitor_state (
-        monitor_id TEXT PRIMARY KEY,
-        last_status TEXT NOT NULL DEFAULT 'unknown',
-        last_change_ts INTEGER
-      )`,
-      `CREATE TABLE IF NOT EXISTS ssl_status (
-        monitor_id TEXT PRIMARY KEY,
-        valid INTEGER,
-        expires_at INTEGER,
-        days_left INTEGER,
-        checked_at INTEGER,
-        error TEXT
-      )`,
-      `CREATE TABLE IF NOT EXISTS domain_status (
-        monitor_id TEXT PRIMARY KEY,
-        domain TEXT,
-        valid INTEGER,
-        expires_at INTEGER,
-        days_left INTEGER,
-        checked_at INTEGER,
-        error TEXT
-      )`,
-      `CREATE TABLE IF NOT EXISTS restart_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        monitor_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        success INTEGER,
-        error TEXT
-      )`,
-      `CREATE TABLE IF NOT EXISTS multi_location_results (
-        monitor_id TEXT PRIMARY KEY,
-        ts INTEGER NOT NULL,
-        results_json TEXT NOT NULL
-      )`,
-      `CREATE TABLE IF NOT EXISTS incidents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        monitor_id TEXT NOT NULL,
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER,
-        status TEXT NOT NULL DEFAULT 'ongoing',
-        cause_category TEXT,
-        cause_label TEXT,
-        cause_explanation TEXT,
-        cause_suggestion TEXT,
-        last_error TEXT,
-        checks_failed INTEGER DEFAULT 1,
-        recovery_attempted INTEGER DEFAULT 0,
-        recovery_provider TEXT,
-        recovery_result TEXT,
-        notification_sent INTEGER DEFAULT 0
-      )`,
-      `CREATE TABLE IF NOT EXISTS monitor_configs (
-        id TEXT PRIMARY KEY,
-        config_json TEXT NOT NULL,
-        created_at INTEGER,
-        updated_at INTEGER
-      )`,
-      `CREATE TABLE IF NOT EXISTS trend_state (
-        monitor_id TEXT PRIMARY KEY,
-        last_notified_ts INTEGER,
-        baseline_ms INTEGER,
-        last_ratio REAL
-      )`,
-      `CREATE TABLE IF NOT EXISTS bot_queue_state (
-        monitor_id TEXT PRIMARY KEY,
-        last_notified_ts INTEGER,
-        last_pending_count INTEGER
-      )`,
-      `CREATE TABLE IF NOT EXISTS activity_state (
-        id TEXT PRIMARY KEY,
-        last_activity_ts INTEGER,
-        last_report_sent_ts INTEGER,
-        last_report_covers_from INTEGER
-      )`,
-    ],
-    'write'
-  );
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS checks (
+      id SERIAL PRIMARY KEY,
+      monitor_id TEXT NOT NULL,
+      ts BIGINT NOT NULL,
+      ok INTEGER NOT NULL,
+      response_ms INTEGER,
+      status_code INTEGER,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_checks_monitor_ts ON checks(monitor_id, ts);
+    CREATE TABLE IF NOT EXISTS monitor_state (
+      monitor_id TEXT PRIMARY KEY,
+      last_status TEXT NOT NULL DEFAULT 'unknown',
+      last_change_ts BIGINT
+    );
+    CREATE TABLE IF NOT EXISTS ssl_status (
+      monitor_id TEXT PRIMARY KEY,
+      valid INTEGER,
+      expires_at BIGINT,
+      days_left INTEGER,
+      checked_at BIGINT,
+      error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS domain_status (
+      monitor_id TEXT PRIMARY KEY,
+      domain TEXT,
+      valid INTEGER,
+      expires_at BIGINT,
+      days_left INTEGER,
+      checked_at BIGINT,
+      error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS restart_log (
+      id SERIAL PRIMARY KEY,
+      monitor_id TEXT NOT NULL,
+      ts BIGINT NOT NULL,
+      success INTEGER,
+      error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS multi_location_results (
+      monitor_id TEXT PRIMARY KEY,
+      ts BIGINT NOT NULL,
+      results_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS incidents (
+      id SERIAL PRIMARY KEY,
+      monitor_id TEXT NOT NULL,
+      started_at BIGINT NOT NULL,
+      ended_at BIGINT,
+      status TEXT NOT NULL DEFAULT 'ongoing',
+      cause_category TEXT,
+      cause_label TEXT,
+      cause_explanation TEXT,
+      cause_suggestion TEXT,
+      last_error TEXT,
+      checks_failed INTEGER DEFAULT 1,
+      recovery_attempted INTEGER DEFAULT 0,
+      recovery_provider TEXT,
+      recovery_result TEXT,
+      notification_sent INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS monitor_configs (
+      id TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL,
+      created_at BIGINT,
+      updated_at BIGINT
+    );
+    CREATE TABLE IF NOT EXISTS trend_state (
+      monitor_id TEXT PRIMARY KEY,
+      last_notified_ts BIGINT,
+      baseline_ms INTEGER,
+      last_ratio REAL
+    );
+    CREATE TABLE IF NOT EXISTS bot_queue_state (
+      monitor_id TEXT PRIMARY KEY,
+      last_notified_ts BIGINT,
+      last_pending_count INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS activity_state (
+      id TEXT PRIMARY KEY,
+      last_activity_ts BIGINT,
+      last_report_sent_ts BIGINT,
+      last_report_covers_from BIGINT
+    );
+  `);
 
+  // В отличие от SQLite, Postgres 9.6+ поддерживает "ADD COLUMN IF NOT
+  // EXISTS" нативно — не нужен try/catch на каждую миграцию, как раньше.
   const migrations = [
-    `ALTER TABLE checks ADD COLUMN response_headers TEXT`,
-    `ALTER TABLE checks ADD COLUMN content_ok INTEGER`,
-    `ALTER TABLE checks ADD COLUMN timing_breakdown TEXT`,
-    `ALTER TABLE checks ADD COLUMN bot_health TEXT`,
-    `ALTER TABLE checks ADD COLUMN response_size INTEGER`,
-    `ALTER TABLE checks ADD COLUMN size_anomaly INTEGER DEFAULT 0`,
-    `ALTER TABLE monitor_state ADD COLUMN consecutive_fails INTEGER DEFAULT 0`,
-    `ALTER TABLE monitor_state ADD COLUMN restart_attempted INTEGER DEFAULT 0`,
-    `ALTER TABLE monitor_state ADD COLUMN recovery_attempts INTEGER DEFAULT 0`,
-    `ALTER TABLE monitor_state ADD COLUMN recovery_exhausted_notified INTEGER DEFAULT 0`,
-    `ALTER TABLE monitor_state ADD COLUMN last_flapping_notified_ts INTEGER`,
-    `ALTER TABLE monitor_state ADD COLUMN current_incident_id INTEGER`,
-    `ALTER TABLE monitor_state ADD COLUMN flapping_active INTEGER DEFAULT 0`,
-    `ALTER TABLE restart_log ADD COLUMN incident_id INTEGER`,
-    `ALTER TABLE incidents ADD COLUMN evidence_json TEXT`,
+    `ALTER TABLE checks ADD COLUMN IF NOT EXISTS response_headers TEXT`,
+    `ALTER TABLE checks ADD COLUMN IF NOT EXISTS content_ok INTEGER`,
+    `ALTER TABLE checks ADD COLUMN IF NOT EXISTS timing_breakdown TEXT`,
+    `ALTER TABLE checks ADD COLUMN IF NOT EXISTS bot_health TEXT`,
+    `ALTER TABLE checks ADD COLUMN IF NOT EXISTS response_size INTEGER`,
+    `ALTER TABLE checks ADD COLUMN IF NOT EXISTS size_anomaly INTEGER DEFAULT 0`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS consecutive_fails INTEGER DEFAULT 0`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS restart_attempted INTEGER DEFAULT 0`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS recovery_attempts INTEGER DEFAULT 0`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS recovery_exhausted_notified INTEGER DEFAULT 0`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS last_flapping_notified_ts BIGINT`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS current_incident_id INTEGER`,
+    `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS flapping_active INTEGER DEFAULT 0`,
+    `ALTER TABLE restart_log ADD COLUMN IF NOT EXISTS incident_id INTEGER`,
+    `ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_json TEXT`,
   ];
   for (const sql of migrations) {
-    try {
-      await client.execute(sql);
-    } catch (e) {
-      // колонка уже существует — это нормально, игнорируем
-    }
+    await pool.query(sql);
   }
 
-  console.log('[db] Turso: схема инициализирована');
+  console.log('[db] Postgres (Neon): схема инициализирована');
 }
 
 async function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth, responseSize, sizeAnomaly) {
@@ -324,7 +339,7 @@ async function markReportSent(ts, coversFrom) {
 async function getDailyUptime(monitorId, days) {
   const since = Date.now() - days * 24 * 60 * 60 * 1000;
   const rows = await q(
-    `SELECT date(ts / 1000, 'unixepoch') as day, COUNT(*) as total, SUM(ok) as up
+    `SELECT to_char(to_timestamp(ts / 1000), 'YYYY-MM-DD') as day, COUNT(*) as total, SUM(ok) as up
      FROM checks WHERE monitor_id = ? AND ts >= ? GROUP BY day ORDER BY day ASC`,
     [monitorId, since]
   );
@@ -460,12 +475,15 @@ async function getMultiLocationResult(monitorId) {
 }
 
 async function openIncident(monitorId, startedAt, causeCategory, causeLabel, causeExplanation, causeSuggestion, error) {
+  // pg не даёт lastInsertRowid как @libsql/client/better-sqlite3 — берём id
+  // явным RETURNING вместо этого.
   const info = await run(
     `INSERT INTO incidents (monitor_id, started_at, status, cause_category, cause_label, cause_explanation, cause_suggestion, last_error, checks_failed)
-     VALUES (?, ?, 'ongoing', ?, ?, ?, ?, ?, 1)`,
+     VALUES (?, ?, 'ongoing', ?, ?, ?, ?, ?, 1)
+     RETURNING id`,
     [monitorId, startedAt, causeCategory ?? null, causeLabel ?? null, causeExplanation ?? null, causeSuggestion ?? null, error ?? null]
   );
-  const incidentId = Number(info.lastInsertRowid);
+  const incidentId = Number(info.rows[0].id);
   await run(`UPDATE monitor_state SET current_incident_id = ? WHERE monitor_id = ?`, [incidentId, monitorId]);
   return incidentId;
 }
