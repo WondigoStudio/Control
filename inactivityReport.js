@@ -90,11 +90,11 @@ async function maybeSendInactivityReport(monitors) {
   // активность и порог не пройдёт заново.
   if (state.last_report_sent_ts && state.last_report_sent_ts >= state.last_activity_ts) return;
 
-  const sinceTs = state.last_report_covers_from || state.last_activity_ts;
+  const sinceTs = state.last_activity_ts;
   const text = await buildReportText(monitors, sinceTs, now);
 
   await notify('🌙 Отчёт за время неактивности', text);
-  await markReportSent(now, now);
+  await markReportSent(now, sinceTs);
 }
 
 module.exports = { maybeSendInactivityReport, touchActivity };
