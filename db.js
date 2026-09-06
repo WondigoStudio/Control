@@ -137,6 +137,40 @@ async function initDb() {
       last_report_sent_ts BIGINT,
       last_report_covers_from BIGINT
     );
+    CREATE TABLE IF NOT EXISTS crawl_pages (
+      monitor_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      parent_url TEXT,
+      depth INTEGER NOT NULL DEFAULT 0,
+      title TEXT,
+      status_code INTEGER,
+      content_hash TEXT,
+      content_length INTEGER,
+      status TEXT NOT NULL DEFAULT 'new',
+      first_seen_ts BIGINT,
+      last_checked_ts BIGINT,
+      last_changed_ts BIGINT,
+      error TEXT,
+      PRIMARY KEY (monitor_id, url)
+    );
+    CREATE TABLE IF NOT EXISTS crawl_changes (
+      id SERIAL PRIMARY KEY,
+      monitor_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      ts BIGINT NOT NULL,
+      change_type TEXT NOT NULL,
+      old_hash TEXT,
+      new_hash TEXT,
+      diff_summary TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_crawl_changes_monitor_ts ON crawl_changes(monitor_id, ts);
+    CREATE TABLE IF NOT EXISTS crawl_state (
+      monitor_id TEXT PRIMARY KEY,
+      last_run_ts BIGINT,
+      last_run_status TEXT,
+      pages_count INTEGER DEFAULT 0,
+      truncated INTEGER DEFAULT 0
+    );
   `);
 
   // В отличие от SQLite, Postgres 9.6+ поддерживает "ADD COLUMN IF NOT
@@ -597,6 +631,78 @@ async function countMonitorConfigs() {
   return row ? Number(row.cnt) : 0;
 }
 
+// --- Слежка за изменениями на сайте (краулер / "паутина") ---
+// Каждая строка crawl_pages — одна обнаруженная страница монитора.
+// content_hash сравнивается на каждом обходе, чтобы понять new/changed/unchanged.
+// parent_url — от какой страницы её впервые нашли (для построения дерева-паутины).
+
+async function getCrawlPages(monitorId) {
+  return q(`SELECT * FROM crawl_pages WHERE monitor_id = ? ORDER BY depth ASC, first_seen_ts ASC`, [monitorId]);
+}
+
+async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error) {
+  const now = Date.now();
+  const existing = await qOne(`SELECT first_seen_ts, last_changed_ts FROM crawl_pages WHERE monitor_id = ? AND url = ?`, [monitorId, url]);
+  const lastChangedTs = status === 'changed' || status === 'new' ? now : (existing ? existing.last_changed_ts : null);
+  await run(
+    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(monitor_id, url) DO UPDATE SET
+       parent_url = COALESCE(crawl_pages.parent_url, excluded.parent_url),
+       depth = LEAST(crawl_pages.depth, excluded.depth),
+       title = excluded.title,
+       status_code = excluded.status_code,
+       content_hash = excluded.content_hash,
+       content_length = excluded.content_length,
+       status = excluded.status,
+       last_checked_ts = excluded.last_checked_ts,
+       last_changed_ts = excluded.last_changed_ts,
+       error = excluded.error`,
+    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null]
+  );
+}
+
+async function markCrawlPagesRemoved(monitorId, seenUrls, runTs) {
+  if (!seenUrls.length) return;
+  const rows = await q(`SELECT url FROM crawl_pages WHERE monitor_id = ? AND status != 'removed'`, [monitorId]);
+  const seen = new Set(seenUrls);
+  const toRemove = rows.map((r) => r.url).filter((u) => !seen.has(u));
+  for (const url of toRemove) {
+    await run(`UPDATE crawl_pages SET status = 'removed', last_checked_ts = ?, last_changed_ts = ? WHERE monitor_id = ? AND url = ?`, [runTs, runTs, monitorId, url]);
+    await insertCrawlChange(monitorId, url, runTs, 'removed', null, null, 'Страница больше не найдена при обходе');
+  }
+  return toRemove;
+}
+
+async function insertCrawlChange(monitorId, url, ts, changeType, oldHash, newHash, diffSummary) {
+  await run(
+    `INSERT INTO crawl_changes (monitor_id, url, ts, change_type, old_hash, new_hash, diff_summary) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [monitorId, url, ts, changeType, oldHash ?? null, newHash ?? null, diffSummary ?? null]
+  );
+}
+
+async function getCrawlChanges(monitorId, limit) {
+  return q(`SELECT * FROM crawl_changes WHERE monitor_id = ? ORDER BY ts DESC LIMIT ?`, [monitorId, limit || 100]);
+}
+
+async function getCrawlState(monitorId) {
+  return qOne(`SELECT * FROM crawl_state WHERE monitor_id = ?`, [monitorId]);
+}
+
+async function setCrawlState(monitorId, ts, status, pagesCount, truncated) {
+  await run(
+    `INSERT INTO crawl_state (monitor_id, last_run_ts, last_run_status, pages_count, truncated) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(monitor_id) DO UPDATE SET last_run_ts = excluded.last_run_ts, last_run_status = excluded.last_run_status, pages_count = excluded.pages_count, truncated = excluded.truncated`,
+    [monitorId, ts, status, pagesCount, truncated ? 1 : 0]
+  );
+}
+
+async function clearCrawlData(monitorId) {
+  await run(`DELETE FROM crawl_pages WHERE monitor_id = ?`, [monitorId]);
+  await run(`DELETE FROM crawl_changes WHERE monitor_id = ?`, [monitorId]);
+  await run(`DELETE FROM crawl_state WHERE monitor_id = ?`, [monitorId]);
+}
+
 module.exports = {
   initDb,
   insertCheck,
@@ -649,4 +755,12 @@ module.exports = {
   getActivityState,
   touchActivity,
   markReportSent,
+  getCrawlPages,
+  upsertCrawlPage,
+  markCrawlPagesRemoved,
+  insertCrawlChange,
+  getCrawlChanges,
+  getCrawlState,
+  setCrawlState,
+  clearCrawlData,
 };
