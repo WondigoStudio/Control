@@ -72,6 +72,7 @@ async function openMonitorForm(monitor) {
   document.getElementById('f_crawlMaxPages').value = crawl && crawl.maxPages !== undefined ? crawl.maxPages : 40;
   document.getElementById('f_crawlIntervalSec').value = crawl && crawl.intervalSec !== undefined ? crawl.intervalSec : 3600;
   document.getElementById('f_crawlNotify').checked = !crawl || crawl.notifyOnChange !== false;
+  document.getElementById('f_crawlUseBrowser').checked = !!(crawl && crawl.useBrowser);
 
   const recovery = monitor && monitor.recovery ? monitor.recovery : (monitor && monitor.deployHookUrl ? { provider: 'render', deployHookUrl: monitor.deployHookUrl, afterFails: monitor.restartAfterFails } : null);
   document.getElementById('f_recoveryProvider').value = recovery ? recovery.provider : 'none';
@@ -122,6 +123,7 @@ function buildMonitorPayload() {
       intervalSec: parseInt(document.getElementById('f_crawlIntervalSec').value, 10) || 3600,
       sameHostOnly: true,
       notifyOnChange: document.getElementById('f_crawlNotify').checked,
+      useBrowser: document.getElementById('f_crawlUseBrowser').checked,
     };
   } else {
     payload.botToken = document.getElementById('f_botToken').value.trim();
