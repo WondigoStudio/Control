@@ -27,6 +27,7 @@ monitorFormModal.addEventListener('click', (e) => { if (e.target === monitorForm
 
 document.getElementById('f_type').addEventListener('change', updateFormFieldsVisibility);
 document.getElementById('f_recoveryProvider').addEventListener('change', updateFormFieldsVisibility);
+document.getElementById('f_crawlEnabled').addEventListener('change', updateFormFieldsVisibility);
 
 function updateFormFieldsVisibility() {
   const type = document.getElementById('f_type').value;
@@ -35,9 +36,13 @@ function updateFormFieldsVisibility() {
   document.getElementById('row_expectedStatus').hidden = type !== 'http';
   document.getElementById('row_expectedContent').hidden = type !== 'http';
   document.getElementById('row_expectedContentAbsent').hidden = type !== 'http';
+  document.getElementById('row_crawlEnabled').hidden = type !== 'http';
 
   const provider = document.getElementById('f_recoveryProvider').value;
   document.getElementById('recoveryFields').hidden = provider === 'none';
+
+  const crawlEnabled = document.getElementById('f_crawlEnabled').checked;
+  document.getElementById('crawlFields').hidden = type !== 'http' || !crawlEnabled;
 }
 
 async function openMonitorForm(monitor) {
@@ -60,6 +65,13 @@ async function openMonitorForm(monitor) {
     ? (Array.isArray(monitor.expectedContentAbsent) ? monitor.expectedContentAbsent.join(', ') : monitor.expectedContentAbsent)
     : '';
   document.getElementById('f_hosting').value = monitor && monitor.hosting ? monitor.hosting : 'other';
+
+  const crawl = monitor && monitor.crawl ? monitor.crawl : null;
+  document.getElementById('f_crawlEnabled').checked = !!(crawl && crawl.enabled);
+  document.getElementById('f_crawlMaxDepth').value = crawl && crawl.maxDepth !== undefined ? crawl.maxDepth : 2;
+  document.getElementById('f_crawlMaxPages').value = crawl && crawl.maxPages !== undefined ? crawl.maxPages : 40;
+  document.getElementById('f_crawlIntervalSec').value = crawl && crawl.intervalSec !== undefined ? crawl.intervalSec : 3600;
+  document.getElementById('f_crawlNotify').checked = !crawl || crawl.notifyOnChange !== false;
 
   const recovery = monitor && monitor.recovery ? monitor.recovery : (monitor && monitor.deployHookUrl ? { provider: 'render', deployHookUrl: monitor.deployHookUrl, afterFails: monitor.restartAfterFails } : null);
   document.getElementById('f_recoveryProvider').value = recovery ? recovery.provider : 'none';
@@ -103,6 +115,14 @@ function buildMonitorPayload() {
     if (expectedContentAbsent) {
       payload.expectedContentAbsent = expectedContentAbsent.split(',').map((s) => s.trim()).filter(Boolean);
     }
+    payload.crawl = {
+      enabled: document.getElementById('f_crawlEnabled').checked,
+      maxDepth: parseInt(document.getElementById('f_crawlMaxDepth').value, 10) || 0,
+      maxPages: parseInt(document.getElementById('f_crawlMaxPages').value, 10) || 40,
+      intervalSec: parseInt(document.getElementById('f_crawlIntervalSec').value, 10) || 3600,
+      sameHostOnly: true,
+      notifyOnChange: document.getElementById('f_crawlNotify').checked,
+    };
   } else {
     payload.botToken = document.getElementById('f_botToken').value.trim();
   }
@@ -568,6 +588,179 @@ async function loadDetail(m) {
 
   const cachedLocations = await fetch(`/api/monitors/${m.id}/locations`).then((r) => r.json());
   renderLocations(cachedLocations);
+
+  await renderSpiderSection(m);
+}
+
+// --- Паутина: слежка за изменениями на сайте ---
+
+async function renderSpiderSection(m) {
+  const section = document.getElementById('spiderSection');
+  if (m.type !== 'http' || !m.crawlEnabled) {
+    section.hidden = true;
+    return;
+  }
+  section.hidden = false;
+  try {
+    const data = await fetch(`/api/monitors/${m.id}/crawl`).then((r) => r.json());
+    const summary = document.getElementById('spiderSummary');
+    if (!data.state) {
+      summary.textContent = 'Ещё не обходилось — нажми «Открыть паутину» и запусти обход.';
+    } else {
+      const pages = data.pages || [];
+      const changed = pages.filter((p) => p.status === 'changed').length;
+      const fresh = pages.filter((p) => p.status === 'new').length;
+      const removed = pages.filter((p) => p.status === 'removed').length;
+      summary.textContent = `Страниц: ${pages.length} · изменилось: ${changed} · новых: ${fresh} · исчезло: ${removed} · последний обход: ${fmtTime(data.state.last_run_ts)}`;
+    }
+  } catch (e) {
+    document.getElementById('spiderSummary').textContent = '';
+  }
+}
+
+const spiderModal = document.getElementById('spiderModal');
+document.getElementById('openSpiderBtn').addEventListener('click', () => {
+  if (currentMonitor) openSpiderModal(currentMonitor);
+});
+document.getElementById('spiderModalClose').addEventListener('click', () => { spiderModal.hidden = true; });
+spiderModal.addEventListener('click', (e) => { if (e.target === spiderModal) spiderModal.hidden = true; });
+
+async function openSpiderModal(m) {
+  document.getElementById('spiderModalTitle').textContent = m.name;
+  document.getElementById('spiderRunStatus').textContent = '';
+  document.getElementById('spiderRunStatus').className = 'spider-run-status';
+  spiderModal.hidden = false;
+  spiderModal.dataset.monitorId = m.id;
+  await loadSpiderData(m.id);
+}
+
+document.getElementById('spiderRunBtn').addEventListener('click', async () => {
+  const id = spiderModal.dataset.monitorId;
+  if (!id) return;
+  const statusEl = document.getElementById('spiderRunStatus');
+  const btn = document.getElementById('spiderRunBtn');
+  btn.disabled = true;
+  statusEl.className = 'spider-run-status busy';
+  statusEl.textContent = 'обход в процессе… это может занять до минуты';
+  try {
+    const res = await fetch(`/api/monitors/${id}/crawl/run`, { method: 'POST' });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'Ошибка обхода');
+    statusEl.className = 'spider-run-status done';
+    statusEl.textContent = `готово: страниц ${result.pagesVisited}, новых ${result.newCount}, изменилось ${result.changedCount}, исчезло ${result.removedCount}${result.truncated ? ' (упёрлись в лимит страниц)' : ''}`;
+    await loadSpiderData(id);
+    if (latestMonitorsData) {
+      const fresh = latestMonitorsData.find((x) => x.id === id);
+      if (fresh) await renderSpiderSection(fresh);
+    }
+  } catch (e) {
+    statusEl.className = 'spider-run-status error';
+    statusEl.textContent = `ошибка: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function loadSpiderData(monitorId) {
+  const [crawlData, changes] = await Promise.all([
+    fetch(`/api/monitors/${monitorId}/crawl`).then((r) => r.json()),
+    fetch(`/api/monitors/${monitorId}/crawl/changes?limit=60`).then((r) => r.json()),
+  ]);
+  renderSpiderStats(crawlData);
+  renderSpiderGraph(crawlData.pages || []);
+  renderSpiderChanges(changes);
+}
+
+function renderSpiderStats(data) {
+  const pages = data.pages || [];
+  const changed = pages.filter((p) => p.status === 'changed').length;
+  const fresh = pages.filter((p) => p.status === 'new').length;
+  const removed = pages.filter((p) => p.status === 'removed').length;
+  const unchanged = pages.filter((p) => p.status === 'unchanged').length;
+  const box = document.getElementById('spiderStats');
+  box.innerHTML = `
+    <div class="spider-stat"><div class="val">${pages.length}</div><div class="lbl">страниц</div></div>
+    <div class="spider-stat new"><div class="val">${fresh}</div><div class="lbl">новых</div></div>
+    <div class="spider-stat changed"><div class="val">${changed}</div><div class="lbl">изменилось</div></div>
+    <div class="spider-stat"><div class="val">${unchanged}</div><div class="lbl">без изменений</div></div>
+    <div class="spider-stat removed"><div class="val">${removed}</div><div class="lbl">исчезло</div></div>
+  `;
+}
+
+// Радиальная раскладка: страница монитора — в центре, дальше слоями по
+// глубине обхода, каждая новая страница — точка на своём кольце, соединённая
+// линией-«нитью» с той страницей, откуда на неё впервые сослались. Отсюда и
+// вид паутины.
+function renderSpiderGraph(pages) {
+  const svg = document.getElementById('spiderSvg');
+  if (!pages.length) {
+    svg.innerHTML = '';
+    return;
+  }
+  const size = 700;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  const byDepth = new Map();
+  let maxDepth = 0;
+  pages.forEach((p) => {
+    const d = p.depth || 0;
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d).push(p);
+    maxDepth = Math.max(maxDepth, d);
+  });
+
+  const ringGap = maxDepth > 0 ? Math.min(110, (size / 2 - 50) / maxDepth) : 0;
+  const posByUrl = new Map();
+
+  (byDepth.get(0) || []).forEach((p) => posByUrl.set(p.url, { x: cx, y: cy }));
+  for (let d = 1; d <= maxDepth; d++) {
+    const nodes = byDepth.get(d) || [];
+    const r = d * ringGap;
+    nodes.forEach((p, i) => {
+      const angle = (i / nodes.length) * Math.PI * 2 - Math.PI / 2;
+      posByUrl.set(p.url, { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) });
+    });
+  }
+
+  let threads = '';
+  let nodes = '';
+  pages.forEach((p) => {
+    const pos = posByUrl.get(p.url);
+    if (!pos) return;
+    if (p.parent_url) {
+      const parentPos = posByUrl.get(p.parent_url);
+      if (parentPos) {
+        threads += `<line x1="${parentPos.x.toFixed(1)}" y1="${parentPos.y.toFixed(1)}" x2="${pos.x.toFixed(1)}" y2="${pos.y.toFixed(1)}" class="spider-thread status-${p.status}"></line>`;
+      }
+    }
+    const r = p.depth === 0 ? 13 : 6.5;
+    const label = escapeHtml(`${p.title || p.url}\n${p.url}\n${spiderStatusLabel(p.status)}`);
+    nodes += `<g class="spider-node status-${p.status}" data-url="${escapeHtml(p.url)}" style="--r:${r}"><circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${r}"><title>${label}</title></circle></g>`;
+  });
+
+  svg.innerHTML = `<g>${threads}</g><g>${nodes}</g>`;
+  svg.querySelectorAll('.spider-node').forEach((el) => {
+    el.addEventListener('click', () => window.open(el.dataset.url, '_blank', 'noopener'));
+  });
+}
+
+function spiderStatusLabel(status) {
+  return { new: 'новая', changed: 'изменилась', unchanged: 'без изменений', removed: 'исчезла', error: 'ошибка обхода' }[status] || status;
+}
+
+function renderSpiderChanges(changes) {
+  const box = document.getElementById('spiderChanges');
+  if (!changes.length) {
+    box.innerHTML = '<div class="empty" style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">Изменений пока не зафиксировано</div>';
+    return;
+  }
+  box.innerHTML = changes.map((c) => `
+    <div class="spider-change ${c.change_type}">
+      <div class="sc-url">${escapeHtml(c.url)}</div>
+      <div class="sc-meta">${fmtTime(c.ts)} · ${spiderStatusLabel(c.change_type)}${c.diff_summary ? ` · ${escapeHtml(c.diff_summary)}` : ''}</div>
+    </div>
+  `).join('');
 }
 
 function renderBotHealth(history) {
