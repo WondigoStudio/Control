@@ -1018,3 +1018,36 @@ html, body {
   margin-top: 3px;
   font-family: var(--mono);
 }
+
+.spider-debug {
+  background: #0a0c0e;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+.spider-debug__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--panel-border);
+}
+.spider-debug__head .sort-btn { padding: 3px 10px; font-size: 10px; }
+#spiderDebugLog {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: rgba(215,219,221,0.85);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+#spiderDebugLog .dbg-error { color: var(--down); }
+#spiderDebugLog .dbg-warn { color: var(--accent); }
