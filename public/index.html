@@ -89,6 +89,34 @@
           <input type="text" id="f_expectedContentAbsent" placeholder="Database error, Account suspended">
         </div>
 
+        <div class="form-row" id="row_crawlEnabled">
+          <label>
+            <input type="checkbox" id="f_crawlEnabled" style="width:auto;display:inline-block;margin-right:6px;">
+            🕸 Слежка за изменениями (паутина) — обходить сайт и следить за изменением страниц
+          </label>
+        </div>
+
+        <div id="crawlFields" hidden>
+          <div class="form-row">
+            <label>Глубина обхода (переходов по ссылкам от главной)</label>
+            <input type="number" id="f_crawlMaxDepth" value="2" min="0" max="5">
+          </div>
+          <div class="form-row">
+            <label>Макс. страниц за один обход</label>
+            <input type="number" id="f_crawlMaxPages" value="40" min="1" max="300">
+          </div>
+          <div class="form-row">
+            <label>Интервал обхода (сек)</label>
+            <input type="number" id="f_crawlIntervalSec" value="3600" min="60">
+          </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="f_crawlNotify" checked style="width:auto;display:inline-block;margin-right:6px;">
+              Уведомлять при обнаружении изменений
+            </label>
+          </div>
+        </div>
+
         <div class="form-row">
           <label>Хостинг</label>
           <select id="f_hosting">
@@ -207,6 +235,12 @@
         <div class="incidents" id="detailRestarts"></div>
       </div>
 
+      <div id="spiderSection" hidden>
+        <h3 class="section-label">🕸 Слежка за изменениями</h3>
+        <div id="spiderSummary" class="ssl-mini"></div>
+        <button class="sort-btn" id="openSpiderBtn">🕸 Открыть паутину</button>
+      </div>
+
       <div id="locationsSection">
         <h3 class="section-label">Проверка из разных локаций</h3>
         <button class="sort-btn" id="checkLocationsBtn">🌍 Проверить сейчас</button>
@@ -215,6 +249,37 @@
 
       <h3 class="section-label">Последние проверки</h3>
       <div class="detail__log" id="detailLog"></div>
+    </div>
+  </div>
+
+  <div class="detail spider-modal" id="spiderModal" hidden>
+    <div class="detail__panel spider-modal__panel">
+      <button class="detail__close detail__close--floating" id="spiderModalClose">×</button>
+      <h2>🕸 Паутина: <span id="spiderModalTitle">—</span></h2>
+
+      <div class="spider-toolbar">
+        <button class="sort-btn" id="spiderRunBtn">🔄 Обойти сейчас</button>
+        <span id="spiderRunStatus" class="spider-run-status"></span>
+      </div>
+
+      <div class="spider-stats" id="spiderStats"></div>
+
+      <div class="spider-layout">
+        <div class="spider-graph-wrap">
+          <svg id="spiderSvg" viewBox="0 0 700 700" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="spider-legend">
+            <span><i class="dot dot-new"></i> новая</span>
+            <span><i class="dot dot-changed"></i> изменилась</span>
+            <span><i class="dot dot-unchanged"></i> без изменений</span>
+            <span><i class="dot dot-removed"></i> исчезла</span>
+          </div>
+        </div>
+
+        <div class="spider-side">
+          <h3 class="section-label">Последние изменения</h3>
+          <div class="spider-changes" id="spiderChanges"></div>
+        </div>
+      </div>
     </div>
   </div>
 
