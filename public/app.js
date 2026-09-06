@@ -648,6 +648,7 @@ document.getElementById('spiderRunBtn').addEventListener('click', async () => {
     if (!res.ok) throw new Error(result.error || 'Ошибка обхода');
     statusEl.className = 'spider-run-status done';
     statusEl.textContent = `готово: страниц ${result.pagesVisited}, новых ${result.newCount}, изменилось ${result.changedCount}, исчезло ${result.removedCount}${result.truncated ? ' (упёрлись в лимит страниц)' : ''}`;
+    renderSpiderDebugLog(result.debugLog || []);
     await loadSpiderData(id);
     if (latestMonitorsData) {
       const fresh = latestMonitorsData.find((x) => x.id === id);
@@ -661,6 +662,30 @@ document.getElementById('spiderRunBtn').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('spiderDebugToggle').addEventListener('click', () => {
+  const log = document.getElementById('spiderDebugLog');
+  const btn = document.getElementById('spiderDebugToggle');
+  const collapsed = log.style.display === 'none';
+  log.style.display = collapsed ? '' : 'none';
+  btn.textContent = collapsed ? 'свернуть' : 'развернуть';
+});
+
+function renderSpiderDebugLog(lines) {
+  const box = document.getElementById('spiderDebug');
+  const log = document.getElementById('spiderDebugLog');
+  if (!lines || !lines.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  log.style.display = '';
+  document.getElementById('spiderDebugToggle').textContent = 'свернуть';
+  log.innerHTML = lines.map((line) => {
+    const cls = line.startsWith('❌') ? 'dbg-error' : line.startsWith('⚠️') ? 'dbg-warn' : '';
+    return cls ? `<span class="${cls}">${escapeHtml(line)}</span>` : escapeHtml(line);
+  }).join('\n');
+}
+
 async function loadSpiderData(monitorId) {
   const [crawlData, changes] = await Promise.all([
     fetch(`/api/monitors/${monitorId}/crawl`).then((r) => r.json()),
@@ -669,6 +694,7 @@ async function loadSpiderData(monitorId) {
   renderSpiderStats(crawlData);
   renderSpiderGraph(crawlData.pages || []);
   renderSpiderChanges(changes);
+  renderSpiderDebugLog(crawlData.debugLog || []);
 }
 
 function renderSpiderStats(data) {
