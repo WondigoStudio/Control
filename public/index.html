@@ -115,6 +115,15 @@
               Уведомлять при обнаружении изменений
             </label>
           </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="f_crawlUseBrowser" style="width:auto;display:inline-block;margin-right:6px;">
+              🌐 Обходить через headless-браузер (Puppeteer)
+            </label>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5;">
+              Включай, только если сайт защищён JS-антибот-проверкой (обычный обход находит подозрительно мало ссылок / короткий HTML — см. журнал обхода). Требует <code>npm install puppeteer</code> на сервере и заметно медленнее обычного режима.
+            </div>
+          </div>
         </div>
 
         <div class="form-row">
