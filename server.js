@@ -254,10 +254,15 @@ app.get('/api/monitors/:id/crawl', async (req, res) => {
     getCrawlPages(req.params.id),
     getCrawlState(req.params.id),
   ]);
+  let debugLog = [];
+  if (state && state.debug_log) {
+    try { debugLog = JSON.parse(state.debug_log); } catch (e) { debugLog = []; }
+  }
   res.json({
     enabled: !!(monitor.crawl && monitor.crawl.enabled),
     config: monitor.crawl || null,
     state: state || null,
+    debugLog,
     pages,
   });
 });
