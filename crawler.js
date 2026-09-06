@@ -101,11 +101,14 @@ async function fetchPage(url) {
       },
     });
     const contentType = res.headers.get('content-type') || '';
+    const server = res.headers.get('server') || '';
+    const setCookie = res.headers.get('set-cookie') || '';
+    const finalUrl = res.url || url;
     if (!contentType.includes('text/html')) {
-      return { statusCode: res.status, html: null, skipped: true };
+      return { statusCode: res.status, html: null, skipped: true, server, contentType, finalUrl };
     }
     const html = await res.text();
-    return { statusCode: res.status, html };
+    return { statusCode: res.status, html, server, setCookie, finalUrl, contentType };
   } finally {
     clearTimeout(timeout);
   }
@@ -210,6 +213,15 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
         addedToQueue++;
       }
       log(`${url} (глубина ${depth}) → статус ${result.statusCode}, html ${result.html.length} симв., ссылок найдено ${links.length}, добавлено в очередь ${addedToQueue}`);
+      // Если ссылок аномально мало для полученного объёма HTML — скорее всего
+      // это не настоящая страница, а анти-бот заглушка/JS-челлендж хостинга.
+      // Печатаем кусок реального ответа, чтобы это было видно без доступа
+      // к консоли сервера.
+      if (links.length === 0 && result.html.length < 5000) {
+        const snippet = result.html.replace(/\s+/g, ' ').trim().slice(0, 400);
+        log(`⚠️ подозрительно короткий ответ без ссылок — сервер: "${result.server || '—'}", итоговый URL: ${result.finalUrl}${result.setCookie ? ', выставил Set-Cookie (похоже на антибот-челлендж)' : ''}`);
+        log(`⚠️ вот что реально пришло: "${snippet}${result.html.length > 400 ? '…' : ''}"`);
+      }
     }
   }
 
