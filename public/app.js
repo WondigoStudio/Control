@@ -647,10 +647,10 @@ document.getElementById('spiderRunBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`/api/monitors/${id}/crawl/run`, { method: 'POST' });
     const result = await res.json();
-    if (!res.ok) throw new Error(result.error || 'Ошибка обхода');
+    renderSpiderDebugLog(result.debugLog || []);
+    if (!res.ok || result.ok === false) throw new Error(result.error || 'Ошибка обхода');
     statusEl.className = 'spider-run-status done';
     statusEl.textContent = `готово: страниц ${result.pagesVisited}, новых ${result.newCount}, изменилось ${result.changedCount}, исчезло ${result.removedCount}${result.truncated ? ' (упёрлись в лимит страниц)' : ''}`;
-    renderSpiderDebugLog(result.debugLog || []);
     await loadSpiderData(id);
     if (latestMonitorsData) {
       const fresh = latestMonitorsData.find((x) => x.id === id);
@@ -670,6 +670,32 @@ document.getElementById('spiderDebugToggle').addEventListener('click', () => {
   const collapsed = log.style.display === 'none';
   log.style.display = collapsed ? '' : 'none';
   btn.textContent = collapsed ? 'свернуть' : 'развернуть';
+});
+
+document.getElementById('spiderClearBtn').addEventListener('click', async () => {
+  const id = spiderModal.dataset.monitorId;
+  if (!id) return;
+  if (!confirm('Удалить все сохранённые данные обхода (страницы, историю изменений, журнал) для этого монитора? Сам монитор и его настройки не затронутся — можно будет обойти заново с чистого листа.')) return;
+
+  const statusEl = document.getElementById('spiderRunStatus');
+  const btn = document.getElementById('spiderClearBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/monitors/${id}/crawl`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Не удалось очистить данные');
+    statusEl.className = 'spider-run-status done';
+    statusEl.textContent = 'данные обхода очищены';
+    await loadSpiderData(id);
+    if (latestMonitorsData) {
+      const fresh = latestMonitorsData.find((x) => x.id === id);
+      if (fresh) await renderSpiderSection(fresh);
+    }
+  } catch (e) {
+    statusEl.className = 'spider-run-status error';
+    statusEl.textContent = `ошибка: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 function renderSpiderDebugLog(lines) {
