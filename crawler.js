@@ -23,9 +23,43 @@ const DEFAULT_MAX_PAGES = 40;
 const FETCH_TIMEOUT_MS = 10000;
 const SKIP_EXT = /\.(png|jpe?g|gif|svg|webp|ico|css|js|mjs|json|xml|pdf|zip|rar|7z|mp4|mp3|wav|woff2?|ttf|eot|otf)(\?|#|$)/i;
 
+// Декодируем HTML-сущности в href перед тем, как превращать его в URL.
+// Без этого "&amp;lang=ru" остаётся буквальным текстом, и при каждом
+// следующем уровне обхода экранирование накапливается (&amp;amp%3B...),
+// плодя бесконечные мусорные варианты одной и той же ссылки — классическая
+// "ловушка краулера" на страницах с реф-параметрами (языковые переключатели,
+// счётчики, метки и т.п.).
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (m, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (m, dec) => String.fromCodePoint(parseInt(dec, 10)));
+}
+
+// Доп. защита от "ловушек краулера": если у ссылки подозрительно много
+// GET-параметров (сайт с реф-меткой/языковым переключателем, отражающей
+// текущую строку запроса в каждую ссылку, легко плодит комбинаторный взрыв
+// вариантов одной и той же страницы) — не идём туда вглубь, а считаем её
+// потенциальным мусором и пропускаем.
+const MAX_QUERY_PARAMS = 4;
+function looksLikeCrawlerTrap(url) {
+  try {
+    const params = new URL(url).searchParams;
+    let count = 0;
+    for (const _ of params.keys()) count++;
+    return count > MAX_QUERY_PARAMS;
+  } catch (e) {
+    return false;
+  }
+}
+
 function normalizeUrl(rawUrl, base) {
   try {
-    const u = new URL(rawUrl, base);
+    const u = new URL(decodeHtmlEntities(rawUrl), base);
     if (!['http:', 'https:'].includes(u.protocol)) return null;
     u.hash = '';
     // убираем висячий "/" в конце, кроме корня — иначе /about и /about/
@@ -262,13 +296,15 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
     if (depth < maxDepth) {
       const links = extractLinks(result.html, url);
       let addedToQueue = 0;
+      let trapsSkipped = 0;
       for (const link of links) {
         if (visited.has(link)) continue;
         if (sameHostOnly && new URL(link).hostname !== startHost) continue;
+        if (looksLikeCrawlerTrap(link)) { trapsSkipped++; continue; }
         queue.push({ url: link, parent: url, depth: depth + 1 });
         addedToQueue++;
       }
-      log(`${url} (глубина ${depth}) → статус ${result.statusCode}, html ${result.html.length} симв., ссылок найдено ${links.length}, добавлено в очередь ${addedToQueue}`);
+      log(`${url} (глубина ${depth}) → статус ${result.statusCode}, html ${result.html.length} симв., ссылок найдено ${links.length}, добавлено в очередь ${addedToQueue}${trapsSkipped ? `, пропущено как вероятная URL-ловушка ${trapsSkipped}` : ''}`);
       // Если ссылок аномально мало для полученного объёма HTML — скорее всего
       // это не настоящая страница, а анти-бот заглушка/JS-челлендж хостинга.
       // Печатаем кусок реального ответа, чтобы это было видно без доступа
