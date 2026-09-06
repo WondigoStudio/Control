@@ -854,3 +854,167 @@ html, body {
   font-size: 10px;
   color: var(--text-dim);
 }
+
+/* --- Паутина: слежка за изменениями на сайте --- */
+
+.spider-modal__panel {
+  width: min(1100px, 100%);
+  max-height: 92vh;
+}
+
+.spider-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.spider-run-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.spider-run-status.busy { color: var(--accent); }
+.spider-run-status.done { color: var(--up); }
+.spider-run-status.error { color: var(--down); }
+
+.spider-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.spider-stat {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  text-align: center;
+}
+.spider-stat .val { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+.spider-stat .lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
+.spider-stat.new .val { color: var(--accent); }
+.spider-stat.changed .val { color: var(--down); }
+.spider-stat.removed .val { color: var(--text-dim); }
+
+.spider-layout {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+@media (max-width: 820px) {
+  .spider-layout { flex-direction: column; }
+}
+
+.spider-graph-wrap {
+  flex: 1 1 55%;
+  min-width: 0;
+  background:
+    radial-gradient(circle at center, rgba(242,181,68,0.04) 0%, transparent 60%),
+    var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px;
+  position: relative;
+}
+#spiderSvg { width: 100%; height: auto; display: block; }
+
+.spider-thread {
+  stroke: var(--panel-border);
+  stroke-width: 1.2;
+  fill: none;
+}
+.spider-thread.status-new { stroke: rgba(242,181,68,0.5); }
+.spider-thread.status-changed { stroke: rgba(227,91,82,0.55); }
+.spider-thread.status-removed { stroke: var(--panel-border); stroke-dasharray: 3 3; opacity: 0.4; }
+
+.spider-node circle {
+  fill: var(--panel);
+  stroke: var(--unknown);
+  stroke-width: 1.6;
+  cursor: pointer;
+  transition: r 0.15s ease, stroke-width 0.15s ease;
+}
+.spider-node:hover circle { stroke-width: 2.6; }
+
+.spider-node.status-unchanged circle { stroke: var(--up); fill: rgba(53,196,140,0.10); }
+.spider-node.status-new circle {
+  stroke: var(--accent);
+  fill: rgba(242,181,68,0.18);
+  filter: drop-shadow(0 0 5px rgba(242,181,68,0.6));
+  animation: spiderPulse 1.8s infinite ease-in-out;
+}
+.spider-node.status-changed circle {
+  stroke: var(--down);
+  fill: rgba(227,91,82,0.18);
+  filter: drop-shadow(0 0 5px rgba(227,91,82,0.6));
+  animation: spiderPulse 1.8s infinite ease-in-out;
+}
+.spider-node.status-removed circle {
+  stroke: var(--text-dim);
+  fill: transparent;
+  stroke-dasharray: 2 2;
+  opacity: 0.5;
+}
+.spider-node.status-error circle { stroke: var(--down); fill: rgba(227,91,82,0.08); opacity: 0.6; }
+
+@keyframes spiderPulse {
+  0%, 100% { r: var(--r, 7); }
+  50% { r: calc(var(--r, 7) + 2); }
+}
+
+.spider-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  padding: 8px 4px 2px;
+}
+.spider-legend .dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.dot-new { background: var(--accent); box-shadow: 0 0 5px rgba(242,181,68,0.7); }
+.dot-changed { background: var(--down); box-shadow: 0 0 5px rgba(227,91,82,0.7); }
+.dot-unchanged { background: var(--up); }
+.dot-removed { background: var(--text-dim); opacity: 0.5; }
+
+.spider-side {
+  flex: 1 1 45%;
+  min-width: 0;
+}
+
+.spider-changes {
+  max-height: 480px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.spider-change {
+  border: 1px solid var(--panel-border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.spider-change.new { border-left-color: var(--accent); }
+.spider-change.changed { border-left-color: var(--down); }
+.spider-change.removed { border-left-color: var(--text-dim); }
+.spider-change .sc-url {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  word-break: break-all;
+}
+.spider-change .sc-meta {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-top: 3px;
+  font-family: var(--mono);
+}
