@@ -94,7 +94,11 @@ async function fetchPage(url) {
     const res = await fetch(url, {
       signal: controller.signal,
       redirect: 'follow',
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; StatusMonitorSpider/1.0)' },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
     });
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('text/html')) {
@@ -117,6 +121,8 @@ async function runCrawl(monitor) {
   const startUrl = normalizeUrl(monitor.url, monitor.url);
   if (!startUrl) return { ok: false, error: 'Некорректный стартовый URL' };
   const startHost = new URL(startUrl).hostname;
+
+  console.log(`[crawler] ${monitor.id}: старт обхода ${startUrl}, maxDepth=${maxDepth}, maxPages=${maxPages}, sameHostOnly=${sameHostOnly}`);
 
   const existingPages = await getCrawlPages(monitor.id);
   const previousHashes = new Map(existingPages.map((p) => [p.url, p.content_hash]));
@@ -142,12 +148,14 @@ async function runCrawl(monitor) {
       result = await fetchPage(url);
     } catch (e) {
       await upsertCrawlPage(monitor.id, url, parent, depth, null, null, null, null, 'error', e.message);
+      console.log(`[crawler] ${monitor.id}: ошибка загрузки ${url} — ${e.message}`);
       changes.errors++;
       continue;
     }
 
     if (result.skipped || !result.html) {
-      await upsertCrawlPage(monitor.id, url, parent, depth, null, result.statusCode, null, null, 'unchanged', null);
+      await upsertCrawlPage(monitor.id, url, parent, depth, null, result.statusCode, null, null, 'unchanged', `Пропущено: content-type не text/html (код ${result.statusCode})`);
+      console.log(`[crawler] ${monitor.id}: пропущена ${url} — не HTML (status ${result.statusCode})`);
       continue;
     }
 
@@ -180,11 +188,14 @@ async function runCrawl(monitor) {
 
     if (depth < maxDepth) {
       const links = extractLinks(result.html, url);
+      let addedToQueue = 0;
       for (const link of links) {
         if (visited.has(link)) continue;
         if (sameHostOnly && new URL(link).hostname !== startHost) continue;
         queue.push({ url: link, parent: url, depth: depth + 1 });
+        addedToQueue++;
       }
+      console.log(`[crawler] ${monitor.id}: ${url} (глубина ${depth}) — ссылок в html: ${links.length}, добавлено в очередь: ${addedToQueue}, статус ответа: ${result.statusCode}, размер html: ${result.html.length} симв.`);
     }
   }
 
