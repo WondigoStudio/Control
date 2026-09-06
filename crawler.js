@@ -122,7 +122,21 @@ async function runCrawl(monitor) {
   if (!startUrl) return { ok: false, error: 'Некорректный стартовый URL' };
   const startHost = new URL(startUrl).hostname;
 
-  console.log(`[crawler] ${monitor.id}: старт обхода ${startUrl}, maxDepth=${maxDepth}, maxPages=${maxPages}, sameHostOnly=${sameHostOnly}`);
+  const debugLog = [];
+  const log = (msg) => debugLog.push(msg);
+  log(`Старт обхода ${startUrl} · глубина=${maxDepth} · лимит страниц=${maxPages} · только тот же домен=${sameHostOnly ? 'да' : 'нет'}`);
+
+  try {
+    return await crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, sameHostOnly, debugLog, log);
+  } catch (e) {
+    log(`❌ обход прерван непредвиденной ошибкой: ${e.message}`);
+    await setCrawlState(monitor.id, Date.now(), 'error', 0, false, debugLog);
+    return { ok: false, error: e.message, debugLog };
+  }
+}
+
+async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, sameHostOnly, debugLog, log) {
+  const cfg = monitor.crawl || {};
 
   const existingPages = await getCrawlPages(monitor.id);
   const previousHashes = new Map(existingPages.map((p) => [p.url, p.content_hash]));
@@ -148,14 +162,14 @@ async function runCrawl(monitor) {
       result = await fetchPage(url);
     } catch (e) {
       await upsertCrawlPage(monitor.id, url, parent, depth, null, null, null, null, 'error', e.message);
-      console.log(`[crawler] ${monitor.id}: ошибка загрузки ${url} — ${e.message}`);
+      log(`❌ ошибка загрузки ${url} — ${e.message}`);
       changes.errors++;
       continue;
     }
 
     if (result.skipped || !result.html) {
       await upsertCrawlPage(monitor.id, url, parent, depth, null, result.statusCode, null, null, 'unchanged', `Пропущено: content-type не text/html (код ${result.statusCode})`);
-      console.log(`[crawler] ${monitor.id}: пропущена ${url} — не HTML (status ${result.statusCode})`);
+      log(`⚠️ пропущена ${url} — не HTML (статус ответа ${result.statusCode})`);
       continue;
     }
 
@@ -195,7 +209,7 @@ async function runCrawl(monitor) {
         queue.push({ url: link, parent: url, depth: depth + 1 });
         addedToQueue++;
       }
-      console.log(`[crawler] ${monitor.id}: ${url} (глубина ${depth}) — ссылок в html: ${links.length}, добавлено в очередь: ${addedToQueue}, статус ответа: ${result.statusCode}, размер html: ${result.html.length} симв.`);
+      log(`${url} (глубина ${depth}) → статус ${result.statusCode}, html ${result.html.length} симв., ссылок найдено ${links.length}, добавлено в очередь ${addedToQueue}`);
     }
   }
 
@@ -207,7 +221,9 @@ async function runCrawl(monitor) {
     removed = (await markCrawlPagesRemoved(monitor.id, [...visited], runTs)) || [];
   }
 
-  await setCrawlState(monitor.id, runTs, 'ok', visited.size, truncated);
+  log(`Готово: страниц просмотрено ${visited.size}, новых ${changes.new.length}, изменилось ${changes.changed.length}, исчезло ${removed.length}, ошибок ${changes.errors}${truncated ? ' (упёрлись в лимит страниц)' : ''}`);
+
+  await setCrawlState(monitor.id, runTs, 'ok', visited.size, truncated, debugLog);
 
   const hasChanges = changes.new.length > 0 || changes.changed.length > 0 || removed.length > 0;
   if (hasChanges && cfg.notifyOnChange !== false) {
@@ -229,6 +245,7 @@ async function runCrawl(monitor) {
     changedCount: changes.changed.length,
     removedCount: removed.length,
     errorCount: changes.errors,
+    debugLog,
   };
 }
 
