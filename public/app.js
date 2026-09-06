@@ -621,11 +621,21 @@ async function renderSpiderSection(m) {
 }
 
 const spiderModal = document.getElementById('spiderModal');
+let spiderRefreshTimer = null;
+
 document.getElementById('openSpiderBtn').addEventListener('click', () => {
   if (currentMonitor) openSpiderModal(currentMonitor);
 });
-document.getElementById('spiderModalClose').addEventListener('click', () => { spiderModal.hidden = true; });
-spiderModal.addEventListener('click', (e) => { if (e.target === spiderModal) spiderModal.hidden = true; });
+document.getElementById('spiderModalClose').addEventListener('click', () => { closeSpiderModal(); });
+spiderModal.addEventListener('click', (e) => { if (e.target === spiderModal) closeSpiderModal(); });
+
+function closeSpiderModal() {
+  spiderModal.hidden = true;
+  if (spiderRefreshTimer) {
+    clearInterval(spiderRefreshTimer);
+    spiderRefreshTimer = null;
+  }
+}
 
 async function openSpiderModal(m) {
   document.getElementById('spiderModalTitle').textContent = m.name;
@@ -634,6 +644,16 @@ async function openSpiderModal(m) {
   spiderModal.hidden = false;
   spiderModal.dataset.monitorId = m.id;
   await loadSpiderData(m.id);
+
+  // Пока модалка открыта — сама подтягивает свежие данные (страницы,
+  // изменения, журнал) каждые 10 сек. Полезно, если обход в этот момент
+  // идёт по расписанию (cron) или запущен из другой вкладки — не нужно
+  // закрывать и открывать окно заново, чтобы увидеть результат.
+  if (spiderRefreshTimer) clearInterval(spiderRefreshTimer);
+  spiderRefreshTimer = setInterval(() => {
+    if (spiderModal.hidden) return;
+    loadSpiderData(m.id);
+  }, 10000);
 }
 
 document.getElementById('spiderRunBtn').addEventListener('click', async () => {
