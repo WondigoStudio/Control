@@ -18,6 +18,10 @@ try {
   process.exit(0);
 }
 
+console.log(`[ensure-chrome] диагностика: process.cwd()=${process.cwd()}`);
+console.log(`[ensure-chrome] диагностика: __dirname=${__dirname}`);
+console.log(`[ensure-chrome] диагностика: PUPPETEER_CACHE_DIR=${process.env.PUPPETEER_CACHE_DIR || '(не задана — используется путь по умолчанию)'}`);
+
 (async () => {
   try {
     // Если Chrome уже скачан и путь рабочий — ничего делать не нужно.
