@@ -114,12 +114,55 @@ async function fetchPage(url) {
   }
 }
 
-// Основной обход. monitor.crawl = { enabled, maxDepth, maxPages, sameHostOnly, intervalSec }
+// --- Обход через headless-браузер (Puppeteer) ---
+// Нужен для сайтов с JS-антибот-челленджами (например, страница считает
+// AES-хэш в JS и ставит cookie, прежде чем отдать настоящий контент) —
+// обычный fetch() такое пройти не может в принципе, там нужен реальный
+// JS-движок. Puppeteer — опциональная зависимость (см. package.json), чтобы
+// не тянуть ~300 МБ Chromium туда, где он не нужен и может не собраться.
+
+let browserModulePromise = null;
+function loadPuppeteer() {
+  if (!browserModulePromise) {
+    browserModulePromise = Promise.resolve().then(() => require('puppeteer'));
+  }
+  return browserModulePromise;
+}
+
+async function launchBrowser() {
+  const puppeteer = await loadPuppeteer();
+  return puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  });
+}
+
+async function fetchPageBrowser(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7' });
+    const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: FETCH_TIMEOUT_MS * 3 });
+    // Многие JS-антибот-челленджи делают редирект/reload через секунду-две
+    // после того, как посчитали cookie — даём странице немного времени
+    // устояться перед тем, как забрать финальный HTML.
+    await new Promise((r) => setTimeout(r, 1500));
+    const html = await page.content();
+    const statusCode = response ? response.status() : null;
+    const finalUrl = page.url();
+    return { statusCode, html, finalUrl, contentType: 'text/html' };
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+// Основной обход. monitor.crawl = { enabled, maxDepth, maxPages, sameHostOnly, intervalSec, useBrowser }
 async function runCrawl(monitor) {
   const cfg = monitor.crawl || {};
   const maxDepth = Number.isFinite(cfg.maxDepth) ? cfg.maxDepth : DEFAULT_MAX_DEPTH;
   const maxPages = Number.isFinite(cfg.maxPages) ? cfg.maxPages : DEFAULT_MAX_PAGES;
   const sameHostOnly = cfg.sameHostOnly !== false;
+  const useBrowser = !!cfg.useBrowser;
 
   const startUrl = normalizeUrl(monitor.url, monitor.url);
   if (!startUrl) return { ok: false, error: 'Некорректный стартовый URL' };
@@ -127,18 +170,31 @@ async function runCrawl(monitor) {
 
   const debugLog = [];
   const log = (msg) => debugLog.push(msg);
-  log(`Старт обхода ${startUrl} · глубина=${maxDepth} · лимит страниц=${maxPages} · только тот же домен=${sameHostOnly ? 'да' : 'нет'}`);
+  log(`Старт обхода ${startUrl} · глубина=${maxDepth} · лимит страниц=${maxPages} · только тот же домен=${sameHostOnly ? 'да' : 'нет'} · режим=${useBrowser ? 'браузер (Puppeteer)' : 'обычный HTTP-запрос'}`);
+
+  let browser = null;
+  if (useBrowser) {
+    try {
+      browser = await launchBrowser();
+    } catch (e) {
+      log(`❌ не удалось запустить браузер для обхода: ${e.message}. Убедитесь, что установлена опциональная зависимость: npm install puppeteer`);
+      await setCrawlState(monitor.id, Date.now(), 'error', 0, false, debugLog);
+      return { ok: false, error: `Puppeteer недоступен: ${e.message}`, debugLog };
+    }
+  }
 
   try {
-    return await crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, sameHostOnly, debugLog, log);
+    return await crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, sameHostOnly, useBrowser, browser, debugLog, log);
   } catch (e) {
     log(`❌ обход прерван непредвиденной ошибкой: ${e.message}`);
     await setCrawlState(monitor.id, Date.now(), 'error', 0, false, debugLog);
     return { ok: false, error: e.message, debugLog };
+  } finally {
+    if (browser) await browser.close().catch(() => {});
   }
 }
 
-async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, sameHostOnly, debugLog, log) {
+async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, sameHostOnly, useBrowser, browser, debugLog, log) {
   const cfg = monitor.crawl || {};
 
   const existingPages = await getCrawlPages(monitor.id);
@@ -162,7 +218,7 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
 
     let result;
     try {
-      result = await fetchPage(url);
+      result = useBrowser ? await fetchPageBrowser(browser, url) : await fetchPage(url);
     } catch (e) {
       await upsertCrawlPage(monitor.id, url, parent, depth, null, null, null, null, 'error', e.message);
       log(`❌ ошибка загрузки ${url} — ${e.message}`);
