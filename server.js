@@ -281,7 +281,7 @@ app.post('/api/monitors/:id/crawl/run', async (req, res) => {
   }
   try {
     const result = await runCrawl(monitor);
-    res.json(result);
+    res.status(result.ok === false ? 500 : 200).json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -564,6 +564,22 @@ async function start() {
   await initDb();
   await migrateFromFileIfNeeded();
   await loadMonitorsFromDb();
+
+  // Диагностика для режима "обход через браузер" (Puppeteer) — печатаем те
+  // же самые пути, что и в scripts/ensure-chrome.js на этапе сборки. Если
+  // process.cwd() тут и там отличается — значит build и runtime на хостинге
+  // это разные окружения, и PUPPETEER_CACHE_DIR нужно указывать одинаково
+  // в обоих местах (переменной окружения, а не относительным путём).
+  console.log(`[server] диагностика: process.cwd()=${process.cwd()}`);
+  console.log(`[server] диагностика: PUPPETEER_CACHE_DIR=${process.env.PUPPETEER_CACHE_DIR || '(не задана — используется путь по умолчанию)'}`);
+  try {
+    const puppeteer = require('puppeteer');
+    const chromePath = puppeteer.executablePath();
+    const fs = require('fs');
+    console.log(`[server] диагностика: puppeteer.executablePath()=${chromePath} · существует=${fs.existsSync(chromePath)}`);
+  } catch (e) {
+    console.log(`[server] диагностика: puppeteer недоступен в рантайме (${e.message})`);
+  }
 
   for (const m of monitors.filter((x) => x.type !== 'reminder')) {
     lastRunMap[m.id] = Date.now();
