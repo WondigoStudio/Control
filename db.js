@@ -169,7 +169,8 @@ async function initDb() {
       last_run_ts BIGINT,
       last_run_status TEXT,
       pages_count INTEGER DEFAULT 0,
-      truncated INTEGER DEFAULT 0
+      truncated INTEGER DEFAULT 0,
+      debug_log TEXT
     );
   `);
 
@@ -191,6 +192,7 @@ async function initDb() {
     `ALTER TABLE monitor_state ADD COLUMN IF NOT EXISTS flapping_active INTEGER DEFAULT 0`,
     `ALTER TABLE restart_log ADD COLUMN IF NOT EXISTS incident_id INTEGER`,
     `ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_json TEXT`,
+    `ALTER TABLE crawl_state ADD COLUMN IF NOT EXISTS debug_log TEXT`,
   ];
   for (const sql of migrations) {
     await pool.query(sql);
@@ -689,11 +691,11 @@ async function getCrawlState(monitorId) {
   return qOne(`SELECT * FROM crawl_state WHERE monitor_id = ?`, [monitorId]);
 }
 
-async function setCrawlState(monitorId, ts, status, pagesCount, truncated) {
+async function setCrawlState(monitorId, ts, status, pagesCount, truncated, debugLog) {
   await run(
-    `INSERT INTO crawl_state (monitor_id, last_run_ts, last_run_status, pages_count, truncated) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(monitor_id) DO UPDATE SET last_run_ts = excluded.last_run_ts, last_run_status = excluded.last_run_status, pages_count = excluded.pages_count, truncated = excluded.truncated`,
-    [monitorId, ts, status, pagesCount, truncated ? 1 : 0]
+    `INSERT INTO crawl_state (monitor_id, last_run_ts, last_run_status, pages_count, truncated, debug_log) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(monitor_id) DO UPDATE SET last_run_ts = excluded.last_run_ts, last_run_status = excluded.last_run_status, pages_count = excluded.pages_count, truncated = excluded.truncated, debug_log = excluded.debug_log`,
+    [monitorId, ts, status, pagesCount, truncated ? 1 : 0, debugLog ? JSON.stringify(debugLog) : null]
   );
 }
 
