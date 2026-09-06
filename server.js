@@ -10,6 +10,7 @@ const { diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 const { checkTrend } = require('./trendDetection');
 const { maybeSendInactivityReport, touchActivity } = require('./inactivityReport');
+const { runCrawl } = require('./crawler');
 const {
   initDb,
   getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
@@ -17,6 +18,7 @@ const {
   getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
   getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
   getState, closeIncidentManually,
+  getCrawlPages, getCrawlChanges, getCrawlState, clearCrawlData,
 } = require('./db');
 
 const app = express();
@@ -182,6 +184,7 @@ app.get('/api/monitors', async (req, res) => {
             : { enabled: false, until: null },
           recoveryProvider: m.recovery ? m.recovery.provider : (m.deployHookUrl ? 'render' : 'none'),
           flapping: !!(state && state.flapping_active),
+          crawlEnabled: !!(m.crawl && m.crawl.enabled),
         };
       } catch (e) {
         console.error(`[api/monitors] Ошибка получения данных для монитора "${m.id}":`, e.message);
@@ -238,6 +241,50 @@ app.post('/api/monitors/:id/locations', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// --- Паутина: слежка за изменениями на сайте ---
+// Обходит сайт от главной ссылки вглубь, хранит hash содержимого каждой
+// найденной страницы и на каждом обходе сравнивает с предыдущим.
+
+app.get('/api/monitors/:id/crawl', async (req, res) => {
+  const monitor = monitors.find((m) => m.id === req.params.id);
+  if (!monitor) return res.status(404).json({ error: 'Монитор не найден' });
+  const [pages, state] = await Promise.all([
+    getCrawlPages(req.params.id),
+    getCrawlState(req.params.id),
+  ]);
+  res.json({
+    enabled: !!(monitor.crawl && monitor.crawl.enabled),
+    config: monitor.crawl || null,
+    state: state || null,
+    pages,
+  });
+});
+
+app.get('/api/monitors/:id/crawl/changes', async (req, res) => {
+  const limit = parseInt(req.query.limit || '100', 10);
+  const changes = await getCrawlChanges(req.params.id, limit);
+  res.json(changes);
+});
+
+app.post('/api/monitors/:id/crawl/run', async (req, res) => {
+  const monitor = monitors.find((m) => m.id === req.params.id);
+  if (!monitor) return res.status(404).json({ error: 'Монитор не найден' });
+  if (monitor.type !== 'http' || !monitor.url) {
+    return res.status(400).json({ error: 'Слежка за изменениями доступна только для http-мониторов' });
+  }
+  try {
+    const result = await runCrawl(monitor);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/monitors/:id/crawl', async (req, res) => {
+  await clearCrawlData(req.params.id);
+  res.json({ ok: true });
 });
 
 app.get('/api/monitors/:id/history', async (req, res) => {
@@ -385,6 +432,17 @@ function validateMonitorConfig(body) {
   if (!['http', 'telegram_bot'].includes(body.type)) return 'type должен быть "http" или "telegram_bot"';
   if (body.type === 'http' && !body.url) return 'url обязателен для type: "http"';
   if (body.type === 'telegram_bot' && !body.botToken) return 'botToken обязателен для type: "telegram_bot"';
+  if (body.crawl && typeof body.crawl === 'object') {
+    if (body.crawl.maxDepth !== undefined && (!Number.isInteger(body.crawl.maxDepth) || body.crawl.maxDepth < 0 || body.crawl.maxDepth > 5)) {
+      return 'crawl.maxDepth должен быть целым числом от 0 до 5';
+    }
+    if (body.crawl.maxPages !== undefined && (!Number.isInteger(body.crawl.maxPages) || body.crawl.maxPages < 1 || body.crawl.maxPages > 300)) {
+      return 'crawl.maxPages должен быть целым числом от 1 до 300';
+    }
+    if (body.crawl.intervalSec !== undefined && (!Number.isInteger(body.crawl.intervalSec) || body.crawl.intervalSec < 60)) {
+      return 'crawl.intervalSec должен быть не меньше 60';
+    }
+  }
   return null;
 }
 
@@ -423,6 +481,8 @@ app.delete('/api/config/monitors/:id', async (req, res) => {
   await deleteMonitorConfig(req.params.id);
   await loadMonitorsFromDb();
   delete lastRunMap[req.params.id];
+  delete lastCrawlRunMap[req.params.id];
+  await clearCrawlData(req.params.id).catch(() => {});
 
   res.json({ ok: true });
 });
@@ -458,6 +518,29 @@ cron.schedule('*/15 * * * *', () => {
       await checkTrend(m, currentStatus);
     } catch (e) {
       console.error(`Ошибка проверки тренда ${m.id}:`, e.message);
+    }
+  });
+});
+
+// --- Планировщик паутины (слежка за изменениями) ---
+// Обход сайта — операция дороже обычного пинга (десятки запросов вместо
+// одного), поэтому тикаем реже (раз в 5 минут) и внутри сравниваем с
+// собственным интервалом каждого монитора (crawl.intervalSec, по умолчанию
+// раз в час — гораздо реже, чем проверка доступности).
+const lastCrawlRunMap = {};
+
+cron.schedule('*/5 * * * *', () => {
+  const now = Date.now();
+  monitors.filter((m) => m.type === 'http' && m.crawl && m.crawl.enabled && m.url).forEach(async (m) => {
+    const interval = (m.crawl.intervalSec || 3600) * 1000;
+    const last = lastCrawlRunMap[m.id] || 0;
+    if (now - last >= interval) {
+      lastCrawlRunMap[m.id] = now;
+      try {
+        await runCrawl(m);
+      } catch (e) {
+        console.error(`Ошибка обхода паутины ${m.id}:`, e.message);
+      }
     }
   });
 });
