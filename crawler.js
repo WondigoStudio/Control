@@ -474,6 +474,11 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
     }
 
     await upsertCrawlPage(monitor.id, url, parent, depth, title, result.statusCode, hash, normalized.length, status, null, JSON.stringify(newChunks));
+    // Отдельно от currentUrl (которое двигает "живое" кольцо на следующую
+    // страницу) — фиксируем итоговый статус только что обработанной
+    // страницы, чтобы фронтенд мог сразу перекрасить именно её узел, не
+    // дожидаясь следующей полной перерисовки графа.
+    setCrawlProgress(monitor.id, { lastPageUrl: url, lastPageStatus: status, lastPageTs: Date.now() });
 
     // Картинки проверяем независимо от того, поменялся ли текст страницы —
     // афишу могли заменить, ничего не тронув в остальной вёрстке.
