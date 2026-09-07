@@ -73,6 +73,8 @@ async function openMonitorForm(monitor) {
   document.getElementById('f_crawlIntervalSec').value = crawl && crawl.intervalSec !== undefined ? crawl.intervalSec : 3600;
   document.getElementById('f_crawlNotify').checked = !crawl || crawl.notifyOnChange !== false;
   document.getElementById('f_crawlUseBrowser').checked = !!(crawl && crawl.useBrowser);
+  document.getElementById('f_crawlWatchSelector').value = crawl && crawl.watchSelector ? crawl.watchSelector : '';
+  document.getElementById('f_crawlTrackImages').checked = !!(crawl && crawl.trackImages);
 
   const recovery = monitor && monitor.recovery ? monitor.recovery : (monitor && monitor.deployHookUrl ? { provider: 'render', deployHookUrl: monitor.deployHookUrl, afterFails: monitor.restartAfterFails } : null);
   document.getElementById('f_recoveryProvider').value = recovery ? recovery.provider : 'none';
@@ -124,6 +126,8 @@ function buildMonitorPayload() {
       sameHostOnly: true,
       notifyOnChange: document.getElementById('f_crawlNotify').checked,
       useBrowser: document.getElementById('f_crawlUseBrowser').checked,
+      watchSelector: document.getElementById('f_crawlWatchSelector').value.trim(),
+      trackImages: document.getElementById('f_crawlTrackImages').checked,
     };
   } else {
     payload.botToken = document.getElementById('f_botToken').value.trim();
@@ -672,7 +676,7 @@ document.getElementById('spiderRunBtn').addEventListener('click', async () => {
     renderSpiderDebugLog(result.debugLog || []);
     if (!res.ok || result.ok === false) throw new Error(result.error || 'Ошибка обхода');
     statusEl.className = 'spider-run-status done';
-    statusEl.textContent = `готово: страниц ${result.pagesVisited}, новых ${result.newCount}, изменилось ${result.changedCount}, исчезло ${result.removedCount}${result.truncated ? ' (упёрлись в лимит страниц)' : ''}`;
+    statusEl.textContent = `готово: страниц ${result.pagesVisited}, новых ${result.newCount}, изменилось ${result.changedCount}, исчезло ${result.removedCount}${result.imagesChangedCount ? `, картинок изменилось ${result.imagesChangedCount}` : ''}${result.imagesNewCount ? `, новых картинок ${result.imagesNewCount}` : ''}${result.truncated ? ' (упёрлись в лимит страниц)' : ''}`;
     await loadSpiderData(id);
     if (latestMonitorsData) {
       const fresh = latestMonitorsData.find((x) => x.id === id);
@@ -826,7 +830,10 @@ function renderSpiderGraph(pages) {
 }
 
 function spiderStatusLabel(status) {
-  return { new: 'новая', changed: 'изменилась', unchanged: 'без изменений', removed: 'исчезла', error: 'ошибка обхода' }[status] || status;
+  return {
+    new: 'новая', changed: 'изменилась', unchanged: 'без изменений', removed: 'исчезла', error: 'ошибка обхода',
+    image_changed: '🖼 картинка изменилась', image_new: '🖼 новая картинка',
+  }[status] || status;
 }
 
 // Двигает фиолетовое пульсирующее кольцо к точке страницы, которая
