@@ -179,6 +179,27 @@ function safeParseJsonArray(str) {
   }
 }
 
+const HASH_SNAPSHOT_LIMIT = 20000; // чтобы не раздувать БД полными копиями страниц
+
+// Когда hash изменился, но ни один отслеживаемый текстовый блок не поменялся
+// (изменение где-то в разметке/атрибутах — например, случайный id, nonce,
+// cache-busting параметр в src и т.п.) — ищем и показываем ТОЧНОЕ место
+// расхождения в сыром HTML, чтобы не оставлять пользователя с одной лишь
+// фразой "что-то изменилось" без единой зацепки, что именно.
+function findFirstDiff(oldStr, newStr) {
+  if (!oldStr || !newStr) return null;
+  const len = Math.min(oldStr.length, newStr.length);
+  let i = 0;
+  while (i < len && oldStr[i] === newStr[i]) i++;
+  if (i >= len && oldStr.length === newStr.length) return null;
+  const start = Math.max(0, i - 30);
+  return {
+    index: i,
+    oldCtx: oldStr.slice(start, i + 40),
+    newCtx: newStr.slice(start, i + 40),
+  };
+}
+
 // Картинки внутри области слежения — отслеживаем по hash самих байт файла
 // (не HTML), чтобы заметить замену афиши/фото гостя, даже если окружающий
 // текст не менялся ни на символ.
@@ -417,6 +438,7 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
     // diff'а, картинки. Если парсинг вдруг упал — откатываемся на старые
     // регэксп-версии, чтобы обход всё равно не остановился.
     const watchSelector = (cfg.watchSelector || '').trim();
+    const ignoreSelectors = (cfg.ignoreSelectors || '').split(',').map((s) => s.trim()).filter(Boolean);
     let $ = null;
     let title = null;
     let scopedHtmlForHash = result.html;
@@ -426,6 +448,12 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
     try {
       $ = cheerio.load(result.html);
       title = ($('title').first().text() || '').trim().slice(0, 200) || null;
+      // Ссылки и картинки собираем ДО удаления игнорируемых блоков — если
+      // кто-то по ошибке исключит из слежки блок с реальной навигацией,
+      // обход всё равно не должен рвать связи графа.
+      if (cfg.trackImages) imgUrls = extractImages($, $('body').length ? $('body') : $.root(), url);
+      links = extractLinksCheerio($, url);
+
       let $scope = $('body').length ? $('body') : $.root();
       if (watchSelector) {
         const matched = $(watchSelector);
@@ -435,10 +463,17 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
           log(`⚠️ CSS-селектор "${watchSelector}" не найден на ${url} — слежу за всей страницей целиком в этот раз`);
         }
       }
+      // Вырезаем заведомо "шумные" блоки (таймеры, счётчики и т.п.) ПОСЛЕ
+      // выбора области слежения, но ДО подсчёта hash/diff — они реально
+      // меняются на каждой загрузке страницы, но это не значит, что сайт
+      // изменился.
+      if (ignoreSelectors.length) {
+        ignoreSelectors.forEach((sel) => {
+          try { $scope.find(sel).remove(); } catch (e) { log(`⚠️ некорректный игнорируемый селектор "${sel}": ${e.message}`); }
+        });
+      }
       scopedHtmlForHash = $.html($scope);
       newChunks = extractContentChunks($, $scope);
-      if (cfg.trackImages) imgUrls = extractImages($, $scope, url);
-      links = extractLinksCheerio($, url);
     } catch (e) {
       log(`⚠️ не удалось разобрать HTML через cheerio на ${url} (${e.message}) — считаю без учёта CSS-селектора`);
       title = extractTitle(result.html);
@@ -464,6 +499,16 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
       if (prevChunks) {
         const d = diffChunks(prevChunks, newChunks);
         summary = summarizeChunkDiff(d.added, d.removed, sizeDelta);
+        // Диагностика: hash изменился, но ни один отслеживаемый текстовый
+        // блок — нет. Значит разница где-то в разметке/атрибутах (или в
+        // блоке, который стоило бы исключить через "ignoreSelectors").
+        // Показываем точное место расхождения, а не просто "что-то не то".
+        if (d.added.length === 0 && d.removed.length === 0 && prevPage && prevPage.hash_snapshot) {
+          const diff = findFirstDiff(prevPage.hash_snapshot, normalized);
+          if (diff) {
+            summary += ` · место расхождения в разметке: было "…${diff.oldCtx}…" стало "…${diff.newCtx}…" — если это что-то постоянно меняющееся (таймер, счётчик и т.п.), исключи его через "Исключить из слежки" в настройках`;
+          }
+        }
       } else {
         const sign = sizeDelta >= 0 ? '+' : '';
         summary = `Контент изменился (размер ${sign}${sizeDelta} симв.)`;
@@ -473,7 +518,7 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
       status = 'unchanged';
     }
 
-    await upsertCrawlPage(monitor.id, url, parent, depth, title, result.statusCode, hash, normalized.length, status, null, JSON.stringify(newChunks));
+    await upsertCrawlPage(monitor.id, url, parent, depth, title, result.statusCode, hash, normalized.length, status, null, JSON.stringify(newChunks), normalized.slice(0, HASH_SNAPSHOT_LIMIT));
     // Отдельно от currentUrl (которое двигает "живое" кольцо на следующую
     // страницу) — фиксируем итоговый статус только что обработанной
     // страницы, чтобы фронтенд мог сразу перекрасить именно её узел, не
