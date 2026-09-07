@@ -74,6 +74,7 @@ async function openMonitorForm(monitor) {
   document.getElementById('f_crawlNotify').checked = !crawl || crawl.notifyOnChange !== false;
   document.getElementById('f_crawlUseBrowser').checked = !!(crawl && crawl.useBrowser);
   document.getElementById('f_crawlWatchSelector').value = crawl && crawl.watchSelector ? crawl.watchSelector : '';
+  document.getElementById('f_crawlIgnoreSelectors').value = crawl && crawl.ignoreSelectors ? crawl.ignoreSelectors : '';
   document.getElementById('f_crawlTrackImages').checked = !!(crawl && crawl.trackImages);
 
   const recovery = monitor && monitor.recovery ? monitor.recovery : (monitor && monitor.deployHookUrl ? { provider: 'render', deployHookUrl: monitor.deployHookUrl, afterFails: monitor.restartAfterFails } : null);
@@ -127,6 +128,7 @@ function buildMonitorPayload() {
       notifyOnChange: document.getElementById('f_crawlNotify').checked,
       useBrowser: document.getElementById('f_crawlUseBrowser').checked,
       watchSelector: document.getElementById('f_crawlWatchSelector').value.trim(),
+      ignoreSelectors: document.getElementById('f_crawlIgnoreSelectors').value.trim(),
       trackImages: document.getElementById('f_crawlTrackImages').checked,
     };
   } else {
