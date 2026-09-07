@@ -625,7 +625,6 @@ async function renderSpiderSection(m) {
 }
 
 const spiderModal = document.getElementById('spiderModal');
-let spiderRefreshTimer = null;
 
 document.getElementById('openSpiderBtn').addEventListener('click', () => {
   if (currentMonitor) openSpiderModal(currentMonitor);
@@ -636,10 +635,6 @@ spiderModal.addEventListener('click', (e) => { if (e.target === spiderModal) clo
 function closeSpiderModal() {
   spiderModal.hidden = true;
   stopSpiderProgressPolling();
-  if (spiderRefreshTimer) {
-    clearInterval(spiderRefreshTimer);
-    spiderRefreshTimer = null;
-  }
 }
 
 async function openSpiderModal(m) {
@@ -650,16 +645,6 @@ async function openSpiderModal(m) {
   spiderModal.dataset.monitorId = m.id;
   await loadSpiderData(m.id);
   startSpiderProgressPolling(m.id);
-
-  // Пока модалка открыта — сама подтягивает свежие данные (страницы,
-  // изменения, журнал) каждые 10 сек. Полезно, если обход в этот момент
-  // идёт по расписанию (cron) или запущен из другой вкладки — не нужно
-  // закрывать и открывать окно заново, чтобы увидеть результат.
-  if (spiderRefreshTimer) clearInterval(spiderRefreshTimer);
-  spiderRefreshTimer = setInterval(() => {
-    if (spiderModal.hidden) return;
-    loadSpiderData(m.id);
-  }, 10000);
 }
 
 document.getElementById('spiderRunBtn').addEventListener('click', async () => {
@@ -855,23 +840,56 @@ function updateSpiderProgressRing(currentUrl) {
 }
 
 let spiderProgressTimer = null;
+let spiderLastAppliedPageUrl = null;
+let spiderPollTick = 0;
+let spiderWasRunning = false;
 
 function startSpiderProgressPolling(monitorId) {
   stopSpiderProgressPolling();
+  spiderLastAppliedPageUrl = null;
+  spiderPollTick = 0;
+  spiderWasRunning = false;
   spiderProgressTimer = setInterval(async () => {
     if (spiderModal.hidden) return;
     try {
       const progress = await fetch(`/api/monitors/${monitorId}/crawl/progress`).then((r) => r.json());
+
       if (progress.running) {
+        spiderWasRunning = true;
         updateSpiderProgressRing(progress.currentUrl);
+
+        // Как только очередная страница обработана — сразу перекрашиваем
+        // именно её узел в правильный цвет, не дожидаясь общей
+        // перерисовки. Раньше узел мог оставаться "красным"/старого цвета,
+        // пока фиолетовое кольцо уже убежало проверять следующую страницу.
+        if (progress.lastPageUrl && progress.lastPageUrl !== spiderLastAppliedPageUrl) {
+          spiderLastAppliedPageUrl = progress.lastPageUrl;
+          updateSpiderNodeStatus(progress.lastPageUrl, progress.lastPageStatus);
+        }
+
         const statusEl = document.getElementById('spiderRunStatus');
-        // Не перетираем финальное "готово"/"ошибка" от собственного запуска —
-        // обновляем текст статуса только пока реально что-то идёт (это может
-        // быть и фоновый обход по расписанию, запущенный не из этого окна).
         statusEl.className = 'spider-run-status busy';
         statusEl.textContent = `проверяется: ${progress.currentUrl} (просмотрено ${progress.visited || 0})`;
+
+        // Полная перерисовка (чтобы забрать только что найденные новые
+        // страницы/связи, которых ещё нет на графе) — каждые ~3.6 сек, а не
+        // раз в 10 — обход часто идёт быстрее, чем раз в 10 сек, и график
+        // визуально сильно отставал от реальности ("прошёл уже 5 страниц,
+        // а на графе ещё одна").
+        spiderPollTick++;
+        if (spiderPollTick % 3 === 0) {
+          await loadSpiderData(monitorId);
+        }
       } else {
         updateSpiderProgressRing(null);
+        // Обход только что закончился (в этой вкладке или по расписанию) —
+        // сразу подтягиваем финальный результат целиком, не дожидаясь
+        // следующего тика.
+        if (spiderWasRunning) {
+          spiderWasRunning = false;
+          spiderLastAppliedPageUrl = null;
+          await loadSpiderData(monitorId);
+        }
       }
     } catch (e) {
       // тихо игнорируем — это фоновый опрос, не критично, если пропустим один тик
@@ -885,6 +903,20 @@ function stopSpiderProgressPolling() {
     spiderProgressTimer = null;
   }
   updateSpiderProgressRing(null);
+}
+
+// Точечно красит один узел в новый статус без перерисовки всего графа —
+// иначе на каждый чих пришлось бы пересобирать весь SVG и слушатели кликов.
+function updateSpiderNodeStatus(url, status) {
+  if (!status) return;
+  const svg = document.getElementById('spiderSvg');
+  const nodes = svg.querySelectorAll('.spider-node');
+  for (const el of nodes) {
+    if (el.dataset.url === url) {
+      el.setAttribute('class', `spider-node status-${status}`);
+      break;
+    }
+  }
 }
 
 function renderSpiderChanges(changes) {
