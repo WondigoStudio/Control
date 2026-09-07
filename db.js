@@ -172,6 +172,18 @@ async function initDb() {
       truncated INTEGER DEFAULT 0,
       debug_log TEXT
     );
+    CREATE TABLE IF NOT EXISTS crawl_images (
+      monitor_id TEXT NOT NULL,
+      page_url TEXT NOT NULL,
+      img_url TEXT NOT NULL,
+      content_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'new',
+      first_seen_ts BIGINT,
+      last_checked_ts BIGINT,
+      last_changed_ts BIGINT,
+      error TEXT,
+      PRIMARY KEY (monitor_id, page_url, img_url)
+    );
   `);
 
   // В отличие от SQLite, Postgres 9.6+ поддерживает "ADD COLUMN IF NOT
@@ -193,6 +205,7 @@ async function initDb() {
     `ALTER TABLE restart_log ADD COLUMN IF NOT EXISTS incident_id INTEGER`,
     `ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_json TEXT`,
     `ALTER TABLE crawl_state ADD COLUMN IF NOT EXISTS debug_log TEXT`,
+    `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS items_json TEXT`,
   ];
   for (const sql of migrations) {
     await pool.query(sql);
@@ -642,13 +655,13 @@ async function getCrawlPages(monitorId) {
   return q(`SELECT * FROM crawl_pages WHERE monitor_id = ? ORDER BY depth ASC, first_seen_ts ASC`, [monitorId]);
 }
 
-async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error) {
+async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error, itemsJson) {
   const now = Date.now();
   const existing = await qOne(`SELECT first_seen_ts, last_changed_ts FROM crawl_pages WHERE monitor_id = ? AND url = ?`, [monitorId, url]);
   const lastChangedTs = status === 'changed' || status === 'new' ? now : (existing ? existing.last_changed_ts : null);
   await run(
-    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error, items_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(monitor_id, url) DO UPDATE SET
        parent_url = COALESCE(crawl_pages.parent_url, excluded.parent_url),
        depth = LEAST(crawl_pages.depth, excluded.depth),
@@ -659,8 +672,9 @@ async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCo
        status = excluded.status,
        last_checked_ts = excluded.last_checked_ts,
        last_changed_ts = excluded.last_changed_ts,
-       error = excluded.error`,
-    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null]
+       error = excluded.error,
+       items_json = excluded.items_json`,
+    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null, itemsJson ?? null]
   );
 }
 
@@ -703,6 +717,37 @@ async function clearCrawlData(monitorId) {
   await run(`DELETE FROM crawl_pages WHERE monitor_id = ?`, [monitorId]);
   await run(`DELETE FROM crawl_changes WHERE monitor_id = ?`, [monitorId]);
   await run(`DELETE FROM crawl_state WHERE monitor_id = ?`, [monitorId]);
+  await run(`DELETE FROM crawl_images WHERE monitor_id = ?`, [monitorId]);
+}
+
+// --- Отслеживание картинок на страницах (часть слежки за изменениями) ---
+// Отдельная таблица: одна строка = одна картинка на одной странице. Хэш
+// самих байт картинки (не HTML) — так ловим замену афиши/фото даже если
+// текст вокруг не менялся ни на символ.
+
+async function getCrawlImage(monitorId, pageUrl, imgUrl) {
+  return qOne(`SELECT * FROM crawl_images WHERE monitor_id = ? AND page_url = ? AND img_url = ?`, [monitorId, pageUrl, imgUrl]);
+}
+
+async function upsertCrawlImage(monitorId, pageUrl, imgUrl, contentHash, status, error) {
+  const now = Date.now();
+  const existing = await getCrawlImage(monitorId, pageUrl, imgUrl);
+  const lastChangedTs = status === 'changed' || status === 'new' ? now : (existing ? existing.last_changed_ts : null);
+  await run(
+    `INSERT INTO crawl_images (monitor_id, page_url, img_url, content_hash, status, first_seen_ts, last_checked_ts, last_changed_ts, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(monitor_id, page_url, img_url) DO UPDATE SET
+       content_hash = excluded.content_hash,
+       status = excluded.status,
+       last_checked_ts = excluded.last_checked_ts,
+       last_changed_ts = excluded.last_changed_ts,
+       error = excluded.error`,
+    [monitorId, pageUrl, imgUrl, contentHash ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null]
+  );
+}
+
+async function getCrawlImagesForPage(monitorId, pageUrl) {
+  return q(`SELECT * FROM crawl_images WHERE monitor_id = ? AND page_url = ?`, [monitorId, pageUrl]);
 }
 
 module.exports = {
@@ -765,4 +810,7 @@ module.exports = {
   getCrawlState,
   setCrawlState,
   clearCrawlData,
+  getCrawlImage,
+  upsertCrawlImage,
+  getCrawlImagesForPage,
 };
