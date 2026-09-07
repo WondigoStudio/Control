@@ -196,6 +196,21 @@ async function fetchPageBrowser(browser, url) {
   }
 }
 
+// --- Живой прогресс обхода ---
+// Отдельное in-memory хранилище (не в БД — это временное состояние только
+// на время работы обхода), чтобы фронтенд мог опрашивать "что сейчас
+// проверяется" чаще, чем обновляются финальные результаты, и подсвечивать
+// текущую страницу на схеме прямо во время обхода.
+const crawlProgress = {};
+
+function getCrawlProgress(monitorId) {
+  return crawlProgress[monitorId] || { running: false };
+}
+
+function setCrawlProgress(monitorId, patch) {
+  crawlProgress[monitorId] = { ...(crawlProgress[monitorId] || {}), ...patch };
+}
+
 // Основной обход. monitor.crawl = { enabled, maxDepth, maxPages, sameHostOnly, intervalSec, useBrowser }
 async function runCrawl(monitor) {
   const cfg = monitor.crawl || {};
@@ -211,6 +226,7 @@ async function runCrawl(monitor) {
   const debugLog = [];
   const log = (msg) => debugLog.push(msg);
   log(`Старт обхода ${startUrl} · глубина=${maxDepth} · лимит страниц=${maxPages} · только тот же домен=${sameHostOnly ? 'да' : 'нет'} · режим=${useBrowser ? 'браузер (Puppeteer)' : 'обычный HTTP-запрос'}`);
+  setCrawlProgress(monitor.id, { running: true, currentUrl: startUrl, visited: 0, startedAt: Date.now() });
 
   let browser = null;
   if (useBrowser) {
@@ -231,6 +247,7 @@ async function runCrawl(monitor) {
     return { ok: false, error: e.message, debugLog };
   } finally {
     if (browser) await browser.close().catch(() => {});
+    setCrawlProgress(monitor.id, { running: false, currentUrl: null });
   }
 }
 
@@ -255,6 +272,7 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
     const { url, parent, depth } = queue.shift();
     if (visited.has(url)) continue;
     visited.add(url);
+    setCrawlProgress(monitor.id, { running: true, currentUrl: url, visited: visited.size, queued: queue.length });
 
     let result;
     try {
@@ -359,4 +377,4 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
   };
 }
 
-module.exports = { runCrawl, normalizeUrl, diffSummary };
+module.exports = { runCrawl, normalizeUrl, diffSummary, getCrawlProgress };
