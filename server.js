@@ -10,7 +10,7 @@ const { diagnose } = require('./diagnosis');
 const { checkMultiLocation } = require('./multiLocationCheck');
 const { checkTrend } = require('./trendDetection');
 const { maybeSendInactivityReport, touchActivity } = require('./inactivityReport');
-const { runCrawl } = require('./crawler');
+const { runCrawl, getCrawlProgress } = require('./crawler');
 const {
   initDb,
   getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
@@ -265,6 +265,10 @@ app.get('/api/monitors/:id/crawl', async (req, res) => {
     debugLog,
     pages,
   });
+});
+
+app.get('/api/monitors/:id/crawl/progress', (req, res) => {
+  res.json(getCrawlProgress(req.params.id));
 });
 
 app.get('/api/monitors/:id/crawl/changes', async (req, res) => {
