@@ -116,6 +116,22 @@
             </label>
           </div>
           <div class="form-row">
+            <label>CSS-селектор для точечной слежки (опционально)</label>
+            <input type="text" id="f_crawlWatchSelector" placeholder="например: .tickets-price или #guests">
+            <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5;">
+              Если указать — на каждой странице будет отслеживаться только этот блок (по CSS-селектору), а не вся страница целиком. Полезно, чтобы не ловить шум от футера/счётчиков/дат и следить, например, только за ценами или конкретным разделом. Пусто — следим за всей страницей.
+            </div>
+          </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="f_crawlTrackImages" style="width:auto;display:inline-block;margin-right:6px;">
+              🖼 Отслеживать изменения картинок (по содержимому файла)
+            </label>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5;">
+              Заметит замену афиши/фото гостя и т.п., даже если текст вокруг не изменился. До 15 картинок на страницу, немного увеличивает время обхода.
+            </div>
+          </div>
+          <div class="form-row">
             <label>
               <input type="checkbox" id="f_crawlUseBrowser" style="width:auto;display:inline-block;margin-right:6px;">
               🌐 Обходить через headless-браузер (Puppeteer)
