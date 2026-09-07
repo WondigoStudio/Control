@@ -1051,3 +1051,18 @@ html, body {
 }
 #spiderDebugLog .dbg-error { color: var(--down); }
 #spiderDebugLog .dbg-warn { color: var(--accent); }
+
+/* --- Индикатор "проверяется прямо сейчас" на паутине --- */
+.spider-progress-ring {
+  fill: none;
+  stroke: #b06ce8;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 8px rgba(176, 108, 232, 0.85));
+  animation: spiderProgressPulse 1s infinite ease-in-out;
+  pointer-events: none;
+  transition: cx 0.5s ease, cy 0.5s ease;
+}
+@keyframes spiderProgressPulse {
+  0%, 100% { r: 8; opacity: 1; }
+  50% { r: 15; opacity: 0.35; }
+}
