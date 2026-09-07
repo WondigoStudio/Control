@@ -631,6 +631,7 @@ spiderModal.addEventListener('click', (e) => { if (e.target === spiderModal) clo
 
 function closeSpiderModal() {
   spiderModal.hidden = true;
+  stopSpiderProgressPolling();
   if (spiderRefreshTimer) {
     clearInterval(spiderRefreshTimer);
     spiderRefreshTimer = null;
@@ -644,6 +645,7 @@ async function openSpiderModal(m) {
   spiderModal.hidden = false;
   spiderModal.dataset.monitorId = m.id;
   await loadSpiderData(m.id);
+  startSpiderProgressPolling(m.id);
 
   // Пока модалка открыта — сама подтягивает свежие данные (страницы,
   // изменения, журнал) каждые 10 сек. Полезно, если обход в этот момент
@@ -765,8 +767,11 @@ function renderSpiderStats(data) {
 // глубине обхода, каждая новая страница — точка на своём кольце, соединённая
 // линией-«нитью» с той страницей, откуда на неё впервые сослались. Отсюда и
 // вид паутины.
+let spiderNodePositions = new Map(); // url -> {x, y}, для позиционирования индикатора текущей проверки поверх уже отрисованного графа
+
 function renderSpiderGraph(pages) {
   const svg = document.getElementById('spiderSvg');
+  spiderNodePositions = new Map();
   if (!pages.length) {
     svg.innerHTML = '';
     return;
@@ -813,14 +818,66 @@ function renderSpiderGraph(pages) {
     nodes += `<g class="spider-node status-${p.status}" data-url="${escapeHtml(p.url)}" style="--r:${r}"><circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${r}"><title>${label}</title></circle></g>`;
   });
 
-  svg.innerHTML = `<g>${threads}</g><g>${nodes}</g>`;
+  svg.innerHTML = `<g>${threads}</g><g>${nodes}</g><circle id="spiderProgressRing" r="10" class="spider-progress-ring" style="display:none;"></circle>`;
   svg.querySelectorAll('.spider-node').forEach((el) => {
     el.addEventListener('click', () => window.open(el.dataset.url, '_blank', 'noopener'));
   });
+  spiderNodePositions = posByUrl;
 }
 
 function spiderStatusLabel(status) {
   return { new: 'новая', changed: 'изменилась', unchanged: 'без изменений', removed: 'исчезла', error: 'ошибка обхода' }[status] || status;
+}
+
+// Двигает фиолетовое пульсирующее кольцо к точке страницы, которая
+// проверяется прямо сейчас (по данным live-опроса прогресса). Если позиция
+// этой страницы ещё не известна (её нет в уже отрисованном графе — типичный
+// случай для только что найденной, но ещё не отрисованной ссылки) — прячем
+// кольцо, а не рисуем его в случайном месте.
+function updateSpiderProgressRing(currentUrl) {
+  const ring = document.getElementById('spiderProgressRing');
+  if (!ring) return;
+  const pos = currentUrl ? spiderNodePositions.get(currentUrl) : null;
+  if (!pos) {
+    ring.style.display = 'none';
+    return;
+  }
+  ring.setAttribute('cx', pos.x.toFixed(1));
+  ring.setAttribute('cy', pos.y.toFixed(1));
+  ring.style.display = '';
+}
+
+let spiderProgressTimer = null;
+
+function startSpiderProgressPolling(monitorId) {
+  stopSpiderProgressPolling();
+  spiderProgressTimer = setInterval(async () => {
+    if (spiderModal.hidden) return;
+    try {
+      const progress = await fetch(`/api/monitors/${monitorId}/crawl/progress`).then((r) => r.json());
+      if (progress.running) {
+        updateSpiderProgressRing(progress.currentUrl);
+        const statusEl = document.getElementById('spiderRunStatus');
+        // Не перетираем финальное "готово"/"ошибка" от собственного запуска —
+        // обновляем текст статуса только пока реально что-то идёт (это может
+        // быть и фоновый обход по расписанию, запущенный не из этого окна).
+        statusEl.className = 'spider-run-status busy';
+        statusEl.textContent = `проверяется: ${progress.currentUrl} (просмотрено ${progress.visited || 0})`;
+      } else {
+        updateSpiderProgressRing(null);
+      }
+    } catch (e) {
+      // тихо игнорируем — это фоновый опрос, не критично, если пропустим один тик
+    }
+  }, 1200);
+}
+
+function stopSpiderProgressPolling() {
+  if (spiderProgressTimer) {
+    clearInterval(spiderProgressTimer);
+    spiderProgressTimer = null;
+  }
+  updateSpiderProgressRing(null);
 }
 
 function renderSpiderChanges(changes) {
