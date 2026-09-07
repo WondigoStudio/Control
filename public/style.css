@@ -1066,3 +1066,6 @@ html, body {
   0%, 100% { r: 8; opacity: 1; }
   50% { r: 15; opacity: 0.35; }
 }
+
+.spider-change.image_changed,
+.spider-change.image_new { border-left-color: #b06ce8; }
