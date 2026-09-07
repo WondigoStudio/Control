@@ -123,6 +123,13 @@
             </div>
           </div>
           <div class="form-row">
+            <label>Исключить из слежки (через запятую, CSS-селекторы, опционально)</label>
+            <input type="text" id="f_crawlIgnoreSelectors" placeholder="например: #countdown, .cd-num, .visit-counter">
+            <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5;">
+              Обратное предыдущему полю: следим за всей страницей (или за выбранным селектором), но эти блоки полностью исключаем из сравнения. Используй для таймеров обратного отсчёта, счётчиков посетителей и другого, что меняется само по себе и не является "изменением сайта".
+            </div>
+          </div>
+          <div class="form-row">
             <label>
               <input type="checkbox" id="f_crawlTrackImages" style="width:auto;display:inline-block;margin-right:6px;">
               🖼 Отслеживать изменения картинок (по содержимому файла)
