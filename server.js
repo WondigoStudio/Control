@@ -18,7 +18,7 @@ const {
   getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
   getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
   getState, closeIncidentManually,
-  getCrawlPages, getCrawlChanges, getCrawlState, clearCrawlData,
+  getCrawlPages, getCrawlChanges, getCrawlState, clearCrawlData, getCrawlChangeById,
 } = require('./db');
 
 const app = express();
@@ -275,6 +275,14 @@ app.get('/api/monitors/:id/crawl/changes', async (req, res) => {
   const limit = parseInt(req.query.limit || '100', 10);
   const changes = await getCrawlChanges(req.params.id, limit);
   res.json(changes);
+});
+
+app.get('/api/monitors/:id/crawl/changes/:changeId', async (req, res) => {
+  const monitor = monitors.find((m) => m.id === req.params.id);
+  if (!monitor) return res.status(404).json({ error: 'Монитор не найден' });
+  const change = await getCrawlChangeById(req.params.id, req.params.changeId);
+  if (!change) return res.status(404).json({ error: 'Изменение не найдено' });
+  res.json({ ...change, monitorName: monitor.name });
 });
 
 app.post('/api/monitors/:id/crawl/run', async (req, res) => {
