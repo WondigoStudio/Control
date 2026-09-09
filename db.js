@@ -207,6 +207,7 @@ async function initDb() {
     `ALTER TABLE crawl_state ADD COLUMN IF NOT EXISTS debug_log TEXT`,
     `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS items_json TEXT`,
     `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS hash_snapshot TEXT`,
+    `ALTER TABLE crawl_changes ADD COLUMN IF NOT EXISTS diff_json TEXT`,
   ];
   for (const sql of migrations) {
     await pool.query(sql);
@@ -692,15 +693,19 @@ async function markCrawlPagesRemoved(monitorId, seenUrls, runTs) {
   return toRemove;
 }
 
-async function insertCrawlChange(monitorId, url, ts, changeType, oldHash, newHash, diffSummary) {
+async function insertCrawlChange(monitorId, url, ts, changeType, oldHash, newHash, diffSummary, diffJson) {
   await run(
-    `INSERT INTO crawl_changes (monitor_id, url, ts, change_type, old_hash, new_hash, diff_summary) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [monitorId, url, ts, changeType, oldHash ?? null, newHash ?? null, diffSummary ?? null]
+    `INSERT INTO crawl_changes (monitor_id, url, ts, change_type, old_hash, new_hash, diff_summary, diff_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [monitorId, url, ts, changeType, oldHash ?? null, newHash ?? null, diffSummary ?? null, diffJson ?? null]
   );
 }
 
 async function getCrawlChanges(monitorId, limit) {
   return q(`SELECT * FROM crawl_changes WHERE monitor_id = ? ORDER BY ts DESC LIMIT ?`, [monitorId, limit || 100]);
+}
+
+async function getCrawlChangeById(monitorId, changeId) {
+  return qOne(`SELECT * FROM crawl_changes WHERE monitor_id = ? AND id = ?`, [monitorId, changeId]);
 }
 
 async function getCrawlState(monitorId) {
@@ -815,4 +820,5 @@ module.exports = {
   getCrawlImage,
   upsertCrawlImage,
   getCrawlImagesForPage,
+  getCrawlChangeById,
 };
