@@ -1069,3 +1069,13 @@ html, body {
 
 .spider-change.image_changed,
 .spider-change.image_new { border-left-color: #b06ce8; }
+
+.sc-details-link {
+  display: inline-block;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.sc-details-link:hover { text-decoration: underline; }
