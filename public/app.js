@@ -927,10 +927,12 @@ function renderSpiderChanges(changes) {
     box.innerHTML = '<div class="empty" style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">Изменений пока не зафиксировано</div>';
     return;
   }
+  const monitorId = spiderModal.dataset.monitorId;
   box.innerHTML = changes.map((c) => `
     <div class="spider-change ${c.change_type}">
       <div class="sc-url">${escapeHtml(c.url)}</div>
       <div class="sc-meta">${fmtTime(c.ts)} · ${spiderStatusLabel(c.change_type)}${c.diff_summary ? ` · ${escapeHtml(c.diff_summary)}` : ''}</div>
+      <a class="sc-details-link" href="/diff.html?monitor=${encodeURIComponent(monitorId)}&change=${c.id}" target="_blank" rel="noopener">🔍 подробнее →</a>
     </div>
   `).join('');
 }
