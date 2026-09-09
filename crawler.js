@@ -15,7 +15,7 @@ const cheerio = require('cheerio');
 const { URL } = require('url');
 const {
   getCrawlPages, upsertCrawlPage, markCrawlPagesRemoved, insertCrawlChange,
-  getCrawlState, setCrawlState, getCrawlImage, upsertCrawlImage,
+  getCrawlState, setCrawlState, getCrawlImage, upsertCrawlImage, getCrawlImagesForPage,
 } = require('./db');
 const { notify } = require('./notifier');
 
@@ -130,23 +130,54 @@ function extractContentChunks($, $scope) {
 // Сравнение как мультимножеств (порядок не важен) — находит, какие блоки
 // появились, а какие пропали, даже если остальные блоки на странице просто
 // переставили местами.
-function diffChunks(oldArr, newArr) {
-  const oldCounts = new Map();
-  oldArr.forEach((s) => oldCounts.set(s, (oldCounts.get(s) || 0) + 1));
-  const newCounts = new Map();
-  newArr.forEach((s) => newCounts.set(s, (newCounts.get(s) || 0) + 1));
+// Настоящий построчный diff (как в git) через классический LCS: находим
+// самую длинную общую подпоследовательность блоков между старой и новой
+// версией страницы, всё остальное размечаем как add/remove — с сохранением
+// порядка, в отличие от простого сравнения множеств.
+function lcsDiff(oldArr, newArr) {
+  const n = oldArr.length, m = newArr.length;
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = oldArr[i] === newArr[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (oldArr[i] === newArr[j]) { ops.push({ type: 'equal', text: oldArr[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { ops.push({ type: 'remove', text: oldArr[i] }); i++; }
+    else { ops.push({ type: 'add', text: newArr[j] }); j++; }
+  }
+  while (i < n) { ops.push({ type: 'remove', text: oldArr[i] }); i++; }
+  while (j < m) { ops.push({ type: 'add', text: newArr[j] }); j++; }
+  return ops;
+}
 
-  const added = [];
-  for (const [s, c] of newCounts) {
-    const oc = oldCounts.get(s) || 0;
-    for (let i = 0; i < c - oc; i++) added.push(s);
+// Сворачиваем длинные неизменные участки в маркер "...N неизменных блоков...",
+// оставляя немного контекста (как git diff -U2) вокруг реальных изменений —
+// иначе на длинной странице diff_json раздувается неизменными блоками,
+// которые всё равно никого не интересуют.
+const DIFF_CONTEXT = 2;
+function buildHunks(ops) {
+  const keep = new Array(ops.length).fill(false);
+  ops.forEach((op, k) => {
+    if (op.type !== 'equal') {
+      for (let c = Math.max(0, k - DIFF_CONTEXT); c <= Math.min(ops.length - 1, k + DIFF_CONTEXT); c++) keep[c] = true;
+    }
+  });
+  const result = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (keep[i]) { result.push(ops[i]); i++; }
+    else {
+      let j = i;
+      while (j < ops.length && !keep[j]) j++;
+      result.push({ type: 'context-skip', count: j - i });
+      i = j;
+    }
   }
-  const removed = [];
-  for (const [s, c] of oldCounts) {
-    const nc = newCounts.get(s) || 0;
-    for (let i = 0; i < c - nc; i++) removed.push(s);
-  }
-  return { added, removed };
+  return result;
 }
 
 function truncateChunk(s) {
@@ -496,14 +527,20 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
       changes.changed.push(url);
       const sizeDelta = normalized.length - (prevPage ? (prevPage.content_length || 0) : 0);
       let summary;
+      let diffJson = null;
       if (prevChunks) {
-        const d = diffChunks(prevChunks, newChunks);
-        summary = summarizeChunkDiff(d.added, d.removed, sizeDelta);
+        const ops = lcsDiff(prevChunks, newChunks);
+        const added = ops.filter((o) => o.type === 'add').map((o) => o.text);
+        const removed = ops.filter((o) => o.type === 'remove').map((o) => o.text);
+        summary = summarizeChunkDiff(added, removed, sizeDelta);
+        if (added.length || removed.length) {
+          diffJson = JSON.stringify(buildHunks(ops));
+        }
         // Диагностика: hash изменился, но ни один отслеживаемый текстовый
         // блок — нет. Значит разница где-то в разметке/атрибутах (или в
         // блоке, который стоило бы исключить через "ignoreSelectors").
         // Показываем точное место расхождения, а не просто "что-то не то".
-        if (d.added.length === 0 && d.removed.length === 0 && prevPage && prevPage.hash_snapshot) {
+        if (added.length === 0 && removed.length === 0 && prevPage && prevPage.hash_snapshot) {
           const diff = findFirstDiff(prevPage.hash_snapshot, normalized);
           if (diff) {
             summary += ` · место расхождения в разметке: было "…${diff.oldCtx}…" стало "…${diff.newCtx}…" — если это что-то постоянно меняющееся (таймер, счётчик и т.п.), исключи его через "Исключить из слежки" в настройках`;
@@ -513,7 +550,7 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
         const sign = sizeDelta >= 0 ? '+' : '';
         summary = `Контент изменился (размер ${sign}${sizeDelta} симв.)`;
       }
-      await insertCrawlChange(monitor.id, url, runTs, 'changed', prevHash, hash, summary);
+      await insertCrawlChange(monitor.id, url, runTs, 'changed', prevHash, hash, summary, diffJson);
     } else {
       status = 'unchanged';
     }
@@ -528,6 +565,14 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
     // Картинки проверяем независимо от того, поменялся ли текст страницы —
     // афишу могли заменить, ничего не тронув в остальной вёрстке.
     if (cfg.trackImages && imgUrls.length) {
+      // Если для этой страницы раньше вообще не отслеживалось ни одной
+      // картинки (например, слежку за картинками только что включили на
+      // уже давно обходимом сайте) — это установка базовой линии, а не
+      // поток "новых картинок". Иначе включение галочки на сайте с
+      // десятками страниц устраивает лавину уведомлений на ровном месте.
+      const existingImgs = await getCrawlImagesForPage(monitor.id, url);
+      const hasBaseline = existingImgs.length > 0;
+
       let imgChanged = 0, imgNew = 0;
       for (const imgUrl of imgUrls) {
         try {
@@ -539,10 +584,11 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
             imgChanged++;
             changes.imagesChanged++;
             await insertCrawlChange(monitor.id, url, runTs, 'image_changed', prevImg.content_hash, imgHash, `Картинка изменилась: ${imgUrl}`);
-          } else if (imgStatus === 'new' && status !== 'new') {
-            // Новую картинку отдельно отмечаем, только если сама страница не
-            // новая — иначе на каждой впервые найденной странице будет спам
-            // из "новая картинка" по числу всех картинок на ней.
+          } else if (imgStatus === 'new' && status !== 'new' && hasBaseline) {
+            // Новую картинку отдельно отмечаем, только если у страницы уже
+            // была база для сравнения — иначе на каждой впервые
+            // просканированной странице будет спам из "новая картинка" по
+            // числу всех картинок на ней.
             imgNew++;
             changes.imagesNew++;
             await insertCrawlChange(monitor.id, url, runTs, 'image_new', null, imgHash, `Новая картинка на странице: ${imgUrl}`);
