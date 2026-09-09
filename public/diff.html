@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diff · Пульт наблюдения</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .diff-page {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 32px 6vw 80px;
+  }
+  .diff-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-bottom: 20px;
+  }
+  .diff-back:hover { color: var(--accent); }
+  .diff-header {
+    margin-bottom: 24px;
+  }
+  .diff-url {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    word-break: break-all;
+    margin-bottom: 6px;
+  }
+  .diff-url a { color: inherit; text-decoration: none; }
+  .diff-url a:hover { text-decoration: underline; }
+  .diff-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .diff-badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 100px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .diff-badge.changed { background: rgba(227,91,82,0.15); color: var(--down); }
+  .diff-badge.new { background: rgba(242,181,68,0.15); color: var(--accent); }
+  .diff-badge.removed { background: rgba(150,150,150,0.15); color: var(--text-dim); }
+  .diff-badge.image_changed, .diff-badge.image_new { background: rgba(176,108,232,0.15); color: #b06ce8; }
+
+  .diff-summary-box {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 20px 0 28px;
+  }
+
+  .diff-view {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    overflow: hidden;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .diff-line {
+    display: flex;
+    padding: 3px 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-left: 3px solid transparent;
+  }
+  .diff-line .sign {
+    flex: 0 0 18px;
+    opacity: 0.7;
+    user-select: none;
+  }
+  .diff-line.add {
+    background: rgba(53,196,140,0.10);
+    border-left-color: var(--up);
+    color: #c9f2e0;
+  }
+  .diff-line.remove {
+    background: rgba(227,91,82,0.10);
+    border-left-color: var(--down);
+    color: #f5c9c5;
+  }
+  .diff-line.equal {
+    color: var(--text-dim);
+  }
+  .diff-line.skip {
+    color: var(--text-dim);
+    font-style: italic;
+    padding: 6px 16px;
+    background: rgba(255,255,255,0.015);
+    cursor: default;
+  }
+
+  .diff-empty {
+    color: var(--text-dim);
+    font-size: 13px;
+    padding: 20px 0;
+  }
+  .diff-loading {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+  <div class="scanline"></div>
+  <div class="diff-page">
+    <a href="#" class="diff-back" id="diffBackLink">← назад к монитору</a>
+    <div id="diffContent" class="diff-loading">Загрузка…</div>
+  </div>
+
+  <script>
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str ?? '';
+      return div.innerHTML;
+    }
+
+    function fmtTime(ts) {
+      if (!ts) return '—';
+      return new Date(ts).toLocaleString('ru-RU');
+    }
+
+    function statusLabel(type) {
+      return {
+        new: 'новая страница', changed: 'страница изменилась', removed: 'страница исчезла',
+        image_changed: '🖼 картинка изменилась', image_new: '🖼 новая картинка',
+      }[type] || type;
+    }
+
+    async function load() {
+      const params = new URLSearchParams(window.location.search);
+      const monitorId = params.get('monitor');
+      const changeId = params.get('change');
+      const box = document.getElementById('diffContent');
+      document.getElementById('diffBackLink').href = monitorId ? `/?monitor=${encodeURIComponent(monitorId)}` : '/';
+
+      if (!monitorId || !changeId) {
+        box.className = 'diff-empty';
+        box.textContent = 'Не хватает параметров ссылки (monitor/change).';
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/monitors/${encodeURIComponent(monitorId)}/crawl/changes/${encodeURIComponent(changeId)}`);
+        const change = await res.json();
+        if (!res.ok) throw new Error(change.error || 'Не удалось загрузить изменение');
+        render(change);
+      } catch (e) {
+        box.className = 'diff-empty';
+        box.textContent = 'Ошибка: ' + e.message;
+      }
+    }
+
+    function render(change) {
+      const box = document.getElementById('diffContent');
+      let diffOps = null;
+      if (change.diff_json) {
+        try { diffOps = JSON.parse(change.diff_json); } catch (e) { diffOps = null; }
+      }
+
+      const header = `
+        <div class="diff-header">
+          <div class="diff-url"><a href="${change.url}" target="_blank" rel="noopener">${escapeHtml(change.url)}</a></div>
+          <div class="diff-meta">
+            <span class="diff-badge ${escapeHtml(change.change_type)}">${escapeHtml(statusLabel(change.change_type))}</span>
+            <span>${fmtTime(change.ts)}</span>
+            <span>${escapeHtml(change.monitorName || '')}</span>
+          </div>
+        </div>
+      `;
+
+      const summaryHtml = change.diff_summary
+        ? `<div class="diff-summary-box">${escapeHtml(change.diff_summary)}</div>`
+        : '';
+
+      let diffHtml = '';
+      if (diffOps && diffOps.length) {
+        diffHtml = '<div class="diff-view">' + diffOps.map((op) => {
+          if (op.type === 'context-skip') {
+            return `<div class="diff-line skip">⋯ ${op.count} неизменных блок(ов) свёрнуто ⋯</div>`;
+          }
+          const sign = op.type === 'add' ? '+' : op.type === 'remove' ? '−' : ' ';
+          return `<div class="diff-line ${escapeHtml(op.type)}"><span class="sign">${sign}</span><span>${escapeHtml(op.text)}</span></div>`;
+        }).join('') + '</div>';
+      } else {
+        diffHtml = '<div class="diff-empty">Построчный diff недоступен для этого изменения (например, это первое обнаружение страницы, изменение картинки, или разница была только в разметке/атрибутах — см. описание выше).</div>';
+      }
+
+      box.className = '';
+      box.innerHTML = header + summaryHtml + diffHtml;
+    }
+
+    load();
+  </script>
+</body>
+</html>
