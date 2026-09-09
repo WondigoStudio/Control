@@ -270,19 +270,42 @@ async function fetchImageHash(url) {
 // CSRF-токен или session id, который меняется на КАЖДОЙ загрузке страницы,
 // даже если реальный контент не менялся ни на символ — без этой чистки
 // краулер бы считал такую страницу "изменившейся" при каждом обходе.
-function normalizeForHash(html) {
+// Убираем скрипты/стили/комментарии/скрытые CSRF-поля — то, что реально
+// меняется на каждой загрузке, но не является изменением сайта. Отдельно от
+// схлопывания пробелов, чтобы результат можно было использовать и для hash
+// (после схлопывания), и для построчного diff (с сохранением строк).
+function stripVolatile(html) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<input\b[^>]*\btype\s*=\s*["']hidden["'][^>]*>/gi, '')
-    .replace(/<meta\b[^>]*\bname\s*=\s*["'][^"']*(csrf|token)[^"']*["'][^>]*>/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/<meta\b[^>]*\bname\s*=\s*["'][^"']*(csrf|token)[^"']*["'][^>]*>/gi, '');
+}
+
+function normalizeForHash(html) {
+  return stripVolatile(html).replace(/\s+/g, ' ').trim();
 }
 
 function hashContent(normalized) {
   return crypto.createHash('sha256').update(normalized).digest('hex');
+}
+
+const MAX_DIFF_LINES = 600;
+const MAX_DIFF_LINE_LENGTH = 400;
+
+// Разбиваем очищенный HTML на псевдо-строки — по одной на границу тега
+// (как простейший HTML-форматтер). Это даёт line-level представление кода
+// страницы, по которому можно строить построчный diff вроде git — реагирует
+// на ЛЮБОЕ изменение в коде (включая атрибуты тегов), а не только на текст.
+function htmlToLines(html) {
+  const spaced = html.replace(/></g, '>\n<');
+  return spaced
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => (line.length > MAX_DIFF_LINE_LENGTH ? line.slice(0, MAX_DIFF_LINE_LENGTH) + '…' : line))
+    .slice(0, MAX_DIFF_LINES);
 }
 
 // Грубая оценка "насколько сильно изменилась страница" через сравнение
@@ -511,11 +534,14 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
       links = extractLinks(result.html, url);
     }
 
-    const normalized = normalizeForHash(scopedHtmlForHash);
+    const stripped = stripVolatile(scopedHtmlForHash);
+    const normalized = stripped.replace(/\s+/g, ' ').trim();
+    const rawLines = htmlToLines(stripped);
     const hash = hashContent(normalized);
     const prevHash = previousHashes.get(url);
     const prevPage = existingPages.find((p) => p.url === url);
     const prevChunks = prevPage && prevPage.items_json ? safeParseJsonArray(prevPage.items_json) : null;
+    const prevRawLines = prevPage && prevPage.raw_lines_json ? safeParseJsonArray(prevPage.raw_lines_json) : null;
 
     let status;
     if (prevHash === undefined) {
@@ -527,23 +553,32 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
       changes.changed.push(url);
       const sizeDelta = normalized.length - (prevPage ? (prevPage.content_length || 0) : 0);
       let summary;
+
+      // Построчный diff строим ВСЕГДА по сырому HTML-коду (не только по
+      // видимому тексту) — так видно вообще любое изменение: текст,
+      // атрибуты тегов, структуру. Раньше diff строился только по
+      // смысловым текстовым блокам и пропадал, если менялась разметка.
       let diffJson = null;
+      if (prevRawLines) {
+        const lineOps = lcsDiff(prevRawLines, rawLines);
+        const hasLineDiff = lineOps.some((o) => o.type !== 'equal');
+        if (hasLineDiff) diffJson = JSON.stringify(buildHunks(lineOps));
+      }
+
       if (prevChunks) {
         const ops = lcsDiff(prevChunks, newChunks);
         const added = ops.filter((o) => o.type === 'add').map((o) => o.text);
         const removed = ops.filter((o) => o.type === 'remove').map((o) => o.text);
         summary = summarizeChunkDiff(added, removed, sizeDelta);
-        if (added.length || removed.length) {
-          diffJson = JSON.stringify(buildHunks(ops));
-        }
         // Диагностика: hash изменился, но ни один отслеживаемый текстовый
         // блок — нет. Значит разница где-то в разметке/атрибутах (или в
         // блоке, который стоило бы исключить через "ignoreSelectors").
-        // Показываем точное место расхождения, а не просто "что-то не то".
+        // Построчный diff кода (diffJson выше) в этом случае и покажет,
+        // что именно поменялось — тут просто поясняем словами.
         if (added.length === 0 && removed.length === 0 && prevPage && prevPage.hash_snapshot) {
           const diff = findFirstDiff(prevPage.hash_snapshot, normalized);
           if (diff) {
-            summary += ` · место расхождения в разметке: было "…${diff.oldCtx}…" стало "…${diff.newCtx}…" — если это что-то постоянно меняющееся (таймер, счётчик и т.п.), исключи его через "Исключить из слежки" в настройках`;
+            summary += ` · место расхождения в разметке: было "…${diff.oldCtx}…" стало "…${diff.newCtx}…" — полный построчный diff кода см. на странице "подробнее". Если это что-то постоянно меняющееся (таймер, счётчик и т.п.), исключи его через "Исключить из слежки" в настройках`;
           }
         }
       } else {
@@ -555,7 +590,7 @@ async function crawlInternal(monitor, startUrl, startHost, maxDepth, maxPages, s
       status = 'unchanged';
     }
 
-    await upsertCrawlPage(monitor.id, url, parent, depth, title, result.statusCode, hash, normalized.length, status, null, JSON.stringify(newChunks), normalized.slice(0, HASH_SNAPSHOT_LIMIT));
+    await upsertCrawlPage(monitor.id, url, parent, depth, title, result.statusCode, hash, normalized.length, status, null, JSON.stringify(newChunks), normalized.slice(0, HASH_SNAPSHOT_LIMIT), JSON.stringify(rawLines));
     // Отдельно от currentUrl (которое двигает "живое" кольцо на следующую
     // страницу) — фиксируем итоговый статус только что обработанной
     // страницы, чтобы фронтенд мог сразу перекрасить именно её узел, не
