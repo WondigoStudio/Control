@@ -208,6 +208,7 @@ async function initDb() {
     `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS items_json TEXT`,
     `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS hash_snapshot TEXT`,
     `ALTER TABLE crawl_changes ADD COLUMN IF NOT EXISTS diff_json TEXT`,
+    `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS raw_lines_json TEXT`,
   ];
   for (const sql of migrations) {
     await pool.query(sql);
@@ -657,13 +658,13 @@ async function getCrawlPages(monitorId) {
   return q(`SELECT * FROM crawl_pages WHERE monitor_id = ? ORDER BY depth ASC, first_seen_ts ASC`, [monitorId]);
 }
 
-async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error, itemsJson, hashSnapshot) {
+async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error, itemsJson, hashSnapshot, rawLinesJson) {
   const now = Date.now();
   const existing = await qOne(`SELECT first_seen_ts, last_changed_ts FROM crawl_pages WHERE monitor_id = ? AND url = ?`, [monitorId, url]);
   const lastChangedTs = status === 'changed' || status === 'new' ? now : (existing ? existing.last_changed_ts : null);
   await run(
-    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error, items_json, hash_snapshot)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error, items_json, hash_snapshot, raw_lines_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(monitor_id, url) DO UPDATE SET
        parent_url = COALESCE(crawl_pages.parent_url, excluded.parent_url),
        depth = LEAST(crawl_pages.depth, excluded.depth),
@@ -676,8 +677,9 @@ async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCo
        last_changed_ts = excluded.last_changed_ts,
        error = excluded.error,
        items_json = excluded.items_json,
-       hash_snapshot = excluded.hash_snapshot`,
-    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null, itemsJson ?? null, hashSnapshot ?? null]
+       hash_snapshot = excluded.hash_snapshot,
+       raw_lines_json = excluded.raw_lines_json`,
+    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null, itemsJson ?? null, hashSnapshot ?? null, rawLinesJson ?? null]
   );
 }
 
