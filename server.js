@@ -116,9 +116,26 @@ app.post('/api/logout', (req, res) => {
 // без авторизации, иначе страница логина останется без стилей.
 const PUBLIC_PATHS = ['/api/login', '/login.html', '/style.css'];
 
+// API-токен для машинных клиентов (например, App Hub): заголовок
+// "Authorization: Bearer <CONTROL_API_TOKEN>". Даёт доступ ТОЛЬКО на чтение
+// (GET, белый список путей ниже) — менять конфиг, запускать проверки и читать
+// секреты из /api/config по нему нельзя.
+const API_TOKEN = process.env.CONTROL_API_TOKEN || null;
+
+// Белый список путей: /api/config/* (там ключи, токены ботов и deploy hook'и)
+// токеном не открывается никогда.
+const API_TOKEN_PATHS = /^\/api\/(monitors|summary|time|monitors\/[^/]+\/(history|incidents|stats|heatmap|restarts|locations))$/;
+
+function hasValidApiToken(req) {
+  if (!API_TOKEN || req.method !== 'GET' || !API_TOKEN_PATHS.test(req.path)) return false;
+  const m = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  return !!m && safeCompare(m[1].trim(), API_TOKEN);
+}
+
 function requireAuth(req, res, next) {
   if (!AUTH_PASSWORD) return next(); // если пароль не настроен — не блокируем (для локальной разработки)
   if (PUBLIC_PATHS.includes(req.path)) return next();
+  if (hasValidApiToken(req)) return next();
 
   const cookies = parseCookies(req);
   const token = cookies[SESSION_COOKIE];
@@ -175,6 +192,7 @@ app.get('/api/monitors', async (req, res) => {
           lastError: last ? last.error : null,
           lastErrorDiagnosis: last && !last.ok ? diagnose({ error: last.error, statusCode: last.status_code, responseMs: last.response_ms, timeoutMs: m.timeoutMs, hosting: m.hosting }) : null,
           hosting: m.hosting || 'other',
+          group: m.group || null,
           uptime24h,
           uptime7d,
           ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
@@ -199,6 +217,7 @@ app.get('/api/monitors', async (req, res) => {
           lastError: 'Ошибка получения данных из БД',
           lastErrorDiagnosis: null,
           hosting: m.hosting || 'other',
+          group: m.group || null,
           uptime24h: null,
           uptime7d: null,
           ssl: null,
@@ -446,6 +465,9 @@ function validateMonitorConfig(body) {
     return 'id обязателен и может содержать только строчные латинские буквы, цифры и дефис';
   }
   if (!body.name || typeof body.name !== 'string') return 'name обязателен';
+  if (body.group !== undefined && body.group !== null && (typeof body.group !== 'string' || body.group.length > 60)) {
+    return 'group должна быть строкой до 60 символов';
+  }
   if (!['http', 'telegram_bot'].includes(body.type)) return 'type должен быть "http" или "telegram_bot"';
   if (body.type === 'http' && !body.url) return 'url обязателен для type: "http"';
   if (body.type === 'telegram_bot' && !body.botToken) return 'botToken обязателен для type: "telegram_bot"';
