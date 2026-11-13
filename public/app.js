@@ -65,6 +65,7 @@ async function openMonitorForm(monitor) {
     ? (Array.isArray(monitor.expectedContentAbsent) ? monitor.expectedContentAbsent.join(', ') : monitor.expectedContentAbsent)
     : '';
   document.getElementById('f_hosting').value = monitor && monitor.hosting ? monitor.hosting : 'other';
+  document.getElementById('f_group').value = monitor && monitor.group ? monitor.group : '';
 
   const crawl = monitor && monitor.crawl ? monitor.crawl : null;
   document.getElementById('f_crawlEnabled').checked = !!(crawl && crawl.enabled);
@@ -108,6 +109,7 @@ function buildMonitorPayload() {
     intervalSec: parseInt(document.getElementById('f_intervalSec').value, 10) || 60,
     timeoutMs: parseInt(document.getElementById('f_timeoutMs').value, 10) || 8000,
     hosting: document.getElementById('f_hosting').value,
+    group: document.getElementById('f_group').value.trim() || null,
   };
 
   if (type === 'http') {
