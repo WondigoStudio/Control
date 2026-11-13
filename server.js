@@ -19,6 +19,7 @@ const {
   getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
   getState, closeIncidentManually,
   getCrawlPages, getCrawlChanges, getCrawlState, clearCrawlData, getCrawlChangeById,
+  getEpoch, exportChecks, getMaxCheckId, exportIncidents, exportCrawlChanges, pruneOldData,
 } = require('./db');
 
 const app = express();
@@ -124,7 +125,7 @@ const API_TOKEN = process.env.CONTROL_API_TOKEN || null;
 
 // Белый список путей: /api/config/* (там ключи, токены ботов и deploy hook'и)
 // токеном не открывается никогда.
-const API_TOKEN_PATHS = /^\/api\/(monitors|summary|time|monitors\/[^/]+\/(history|incidents|stats|heatmap|restarts|locations))$/;
+const API_TOKEN_PATHS = /^\/api\/(monitors|summary|time|export\/(meta|checks|incidents|crawl-changes)|monitors\/[^/]+\/(history|incidents|stats|heatmap|restarts|locations))$/;
 
 function hasValidApiToken(req) {
   if (!API_TOKEN || req.method !== 'GET' || !API_TOKEN_PATHS.test(req.path)) return false;
@@ -235,6 +236,50 @@ app.get('/api/monitors', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// --- Экспорт для App Hub (по курсору, только чтение) ---
+// Хаб забирает новые записи пачками и хранит у себя; Control старое чистит
+// (см. RETENTION_DAYS ниже), так что базе лимит не грозит.
+const EXPORT_MAX = 5000;
+const clampLimit = (v) => Math.max(1, Math.min(parseInt(v || '2000', 10) || 2000, EXPORT_MAX));
+const intParam = (v) => Math.max(0, parseInt(v || '0', 10) || 0);
+
+app.get('/api/export/meta', async (req, res) => {
+  try {
+    res.json({
+      epoch: await getEpoch(),
+      now: Date.now(),
+      maxCheckId: await getMaxCheckId(),
+      retentionDays: RETENTION_DAYS,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/export/checks', async (req, res) => {
+  try {
+    res.json(await exportChecks(intParam(req.query.after), clampLimit(req.query.limit)));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/export/incidents', async (req, res) => {
+  try {
+    res.json(await exportIncidents(intParam(req.query.since), clampLimit(req.query.limit)));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/export/crawl-changes', async (req, res) => {
+  try {
+    res.json(await exportCrawlChanges(intParam(req.query.after), clampLimit(req.query.limit)));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/monitors/:id/restarts', async (req, res) => {
@@ -544,6 +589,26 @@ cron.schedule('* * * * *', () => {
     }
   });
 });
+
+// --- Очистка старых данных ---
+// RETENTION_DAYS: сколько дней хранить проверки/инциденты/изменения (по
+// умолчанию 90 — столько показывает карта аптайма; 0 — не удалять).
+// SLIM_AFTER_DAYS: через сколько дней выбрасывать тяжёлые JSON (заголовки,
+// тайминги) из старых проверок (по умолчанию 2).
+const RETENTION_DAYS = process.env.RETENTION_DAYS !== undefined ? parseInt(process.env.RETENTION_DAYS, 10) || 0 : 90;
+const SLIM_AFTER_DAYS = process.env.SLIM_AFTER_DAYS !== undefined ? parseInt(process.env.SLIM_AFTER_DAYS, 10) || 0 : 2;
+
+async function runPrune() {
+  try {
+    const r = await pruneOldData(RETENTION_DAYS, SLIM_AFTER_DAYS);
+    console.log(`[prune] облегчено проверок: ${r.slimmed}; удалено: проверок ${r.checks}, изменений crawler ${r.crawlChanges}, инцидентов ${r.incidents}, перезапусков ${r.restarts}`);
+  } catch (e) {
+    console.error('[prune] Ошибка очистки:', e.message);
+  }
+}
+
+cron.schedule('30 3 * * *', runPrune);
+setTimeout(runPrune, 2 * 60 * 1000);
 
 // --- Predictive Failure Detection ---
 // Отдельный, более редкий цикл: сравнивать почасовые окна имеет смысл не
