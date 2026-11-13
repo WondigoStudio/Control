@@ -214,7 +214,85 @@ async function initDb() {
     await pool.query(sql);
   }
 
+  await pool.query(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`);
+
   console.log('[db] Postgres (Neon): схема инициализирована');
+}
+
+// --- Экспорт для App Hub и очистка ---------------------------------------
+// Control не обязан хранить историю вечно: App Hub забирает записи по курсору
+// (id) и складывает у себя, а здесь старое чистится, чтобы бесплатная БД
+// не упёрлась в лимит.
+
+// "Эпоха" БД: случайный id, который создаётся один раз. Если базу пересоздали,
+// id в таблицах начнутся заново — по смене эпохи хаб понимает, что курсоры
+// нужно сбросить, а не молча терять записи.
+async function getEpoch() {
+  const row = await qOne(`SELECT value FROM meta WHERE key = 'epoch'`);
+  if (row) return row.value;
+  const epoch = require('crypto').randomBytes(8).toString('hex');
+  await run(`INSERT INTO meta (key, value) VALUES ('epoch', ?) ON CONFLICT (key) DO NOTHING`, [epoch]);
+  return (await qOne(`SELECT value FROM meta WHERE key = 'epoch'`)).value;
+}
+
+async function exportChecks(afterId, limit) {
+  return q(
+    `SELECT id, monitor_id, ts, ok, response_ms, status_code, error, content_ok, response_size
+       FROM checks WHERE id > ? ORDER BY id LIMIT ?`,
+    [afterId, limit]
+  );
+}
+
+async function getMaxCheckId() {
+  const row = await qOne(`SELECT COALESCE(MAX(id), 0) AS m FROM checks`);
+  return Number(row.m);
+}
+
+// Инциденты меняются после создания (закрываются, получают результат
+// восстановления), поэтому курсор по id тут не годится: отдаём всё, что
+// началось/закончилось после since, плюс ещё открытые.
+async function exportIncidents(sinceTs, limit) {
+  return q(
+    `SELECT id, monitor_id, started_at, ended_at, status, cause_category, cause_label,
+            cause_explanation, cause_suggestion, last_error, checks_failed,
+            recovery_attempted, recovery_provider, recovery_result
+       FROM incidents
+      WHERE started_at > ? OR ended_at > ? OR ended_at IS NULL
+      ORDER BY id LIMIT ?`,
+    [sinceTs, sinceTs, limit]
+  );
+}
+
+async function exportCrawlChanges(afterId, limit) {
+  return q(
+    `SELECT id, monitor_id, url, ts, change_type, old_hash, new_hash, diff_summary
+       FROM crawl_changes WHERE id > ? ORDER BY id LIMIT ?`,
+    [afterId, limit]
+  );
+}
+
+// Очистка: (1) у старых проверок выбрасываем тяжёлые JSON-колонки (заголовки,
+// тайминги) — для графиков и аптайма они не нужны, а занимают большую часть
+// места; (2) совсем старое удаляем. retentionDays <= 0 — не удалять ничего.
+async function pruneOldData(retentionDays, slimAfterDays) {
+  const day = 24 * 60 * 60 * 1000;
+  const out = { slimmed: 0, checks: 0, crawlChanges: 0, incidents: 0, restarts: 0 };
+  if (slimAfterDays > 0) {
+    const r = await run(
+      `UPDATE checks SET response_headers = NULL, timing_breakdown = NULL, bot_health = NULL
+        WHERE ts < ? AND (response_headers IS NOT NULL OR timing_breakdown IS NOT NULL OR bot_health IS NOT NULL)`,
+      [Date.now() - slimAfterDays * day]
+    );
+    out.slimmed = r.rowCount || 0;
+  }
+  if (retentionDays > 0) {
+    const cutoff = Date.now() - retentionDays * day;
+    out.checks = (await run(`DELETE FROM checks WHERE ts < ?`, [cutoff])).rowCount || 0;
+    out.crawlChanges = (await run(`DELETE FROM crawl_changes WHERE ts < ?`, [cutoff])).rowCount || 0;
+    out.incidents = (await run(`DELETE FROM incidents WHERE ended_at IS NOT NULL AND ended_at < ?`, [cutoff])).rowCount || 0;
+    out.restarts = (await run(`DELETE FROM restart_log WHERE ts < ?`, [cutoff])).rowCount || 0;
+  }
+  return out;
 }
 
 async function insertCheck(monitorId, ok, responseMs, statusCode, error, responseHeaders, contentOk, timing, botHealth, responseSize, sizeAnomaly) {
@@ -761,6 +839,12 @@ async function getCrawlImagesForPage(monitorId, pageUrl) {
 
 module.exports = {
   initDb,
+  getEpoch,
+  exportChecks,
+  getMaxCheckId,
+  exportIncidents,
+  exportCrawlChanges,
+  pruneOldData,
   insertCheck,
   getRecentResponseSizes,
   getLastCheck,
