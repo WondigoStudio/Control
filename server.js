@@ -19,6 +19,7 @@ const {
   getAllMonitorConfigs, upsertMonitorConfig, deleteMonitorConfig, countMonitorConfigs,
   getState, closeIncidentManually,
   getCrawlPages, getCrawlChanges, getCrawlState, clearCrawlData, getCrawlChangeById,
+  getDomainStatus,
   getEpoch, exportChecks, getMaxCheckId, exportIncidents, exportCrawlChanges, pruneOldData,
 } = require('./db');
 
@@ -125,7 +126,7 @@ const API_TOKEN = process.env.CONTROL_API_TOKEN || null;
 
 // Белый список путей: /api/config/* (там ключи, токены ботов и deploy hook'и)
 // токеном не открывается никогда.
-const API_TOKEN_PATHS = /^\/api\/(monitors|summary|time|export\/(meta|checks|incidents|crawl-changes)|monitors\/[^/]+\/(history|incidents|stats|heatmap|restarts|locations))$/;
+const API_TOKEN_PATHS = /^\/api\/(monitors|summary|time|export\/(meta|checks|incidents|crawl-changes)|monitors\/[^/]+\/(history|incidents|stats|heatmap|restarts|locations|crawl|crawl\/progress|crawl\/changes|crawl\/changes\/[^/]+))$/;
 
 function hasValidApiToken(req) {
   if (!API_TOKEN || req.method !== 'GET' || !API_TOKEN_PATHS.test(req.path)) return false;
@@ -175,9 +176,10 @@ app.get('/api/monitors', async (req, res) => {
   let data = await Promise.all(
     monitors.filter((m) => m.type !== 'reminder').map(async (m) => {
       try {
-        const [last, ssl, uptime24h, uptime7d, state] = await Promise.all([
+        const [last, ssl, domain, uptime24h, uptime7d, state] = await Promise.all([
           getLastCheck(m.id),
           getSSLStatus(m.id),
+          getDomainStatus(m.id),
           getUptimePercent(m.id, now - day),
           getUptimePercent(m.id, now - week),
           getState(m.id),
@@ -197,6 +199,9 @@ app.get('/api/monitors', async (req, res) => {
           uptime24h,
           uptime7d,
           ssl: ssl ? { valid: !!ssl.valid, daysLeft: ssl.days_left, error: ssl.error } : null,
+          domain: domain ? { domain: domain.domain, valid: !!domain.valid, daysLeft: domain.days_left, expiresAt: domain.expires_at, error: domain.error } : null,
+          lastStatusCode: last ? last.status_code : null,
+          intervalSec: m.intervalSec || 60,
           hasAutoRestart: !!(m.recovery && m.recovery.provider && m.recovery.provider !== 'none' && m.recovery.enabled !== false) || !!m.deployHookUrl,
           maintenance: (m.maintenance && m.maintenance.enabled && (!m.maintenance.until || Date.now() < m.maintenance.until))
             ? { enabled: true, until: m.maintenance.until }
@@ -322,12 +327,17 @@ app.get('/api/monitors/:id/crawl', async (req, res) => {
   if (state && state.debug_log) {
     try { debugLog = JSON.parse(state.debug_log); } catch (e) { debugLog = []; }
   }
+  // ?light=1 — без тяжёлых колонок (снимки текста страниц): для App Hub и обзоров
+  const HEAVY = ['hash_snapshot', 'items_json', 'raw_lines_json'];
+  const outPages = req.query.light
+    ? pages.map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => !HEAVY.includes(k))))
+    : pages;
   res.json({
     enabled: !!(monitor.crawl && monitor.crawl.enabled),
     config: monitor.crawl || null,
     state: state || null,
-    debugLog,
-    pages,
+    debugLog: req.query.light ? [] : debugLog,
+    pages: outPages,
   });
 });
 
