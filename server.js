@@ -367,7 +367,7 @@ app.post('/api/monitors/:id/crawl/run', async (req, res) => {
   }
   try {
     const result = await runCrawl(monitor);
-    res.status(result.ok === false ? 500 : 200).json(result);
+    res.status(result.busy ? 409 : result.ok === false ? 500 : 200).json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -535,6 +535,12 @@ function validateMonitorConfig(body) {
     }
     if (body.crawl.intervalSec !== undefined && (!Number.isInteger(body.crawl.intervalSec) || body.crawl.intervalSec < 60)) {
       return 'crawl.intervalSec должен быть не меньше 60';
+    }
+    if (body.crawl.hashMode !== undefined && !['text', 'markup'].includes(body.crawl.hashMode)) {
+      return 'crawl.hashMode должен быть "text" (по видимому тексту и ссылкам, по умолчанию) или "markup" (по всей разметке)';
+    }
+    if (body.crawl.removeAfterMisses !== undefined && (!Number.isInteger(body.crawl.removeAfterMisses) || body.crawl.removeAfterMisses < 1 || body.crawl.removeAfterMisses > 10)) {
+      return 'crawl.removeAfterMisses должен быть целым числом от 1 до 10';
     }
   }
   return null;
