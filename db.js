@@ -209,6 +209,12 @@ async function initDb() {
     `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS hash_snapshot TEXT`,
     `ALTER TABLE crawl_changes ADD COLUMN IF NOT EXISTS diff_json TEXT`,
     `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS raw_lines_json TEXT`,
+    // версия способа подсчёта hash (при смене способа база страниц переучивается молча, без "изменилась")
+    `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS hash_ver INTEGER`,
+    // сколько обходов подряд страница отвечала 404/410 (удалённой считается только после нескольких)
+    `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS missed_runs INTEGER DEFAULT 0`,
+    // hash подозрительного резкого изменения: принимается, только если повторится в следующем обходе
+    `ALTER TABLE crawl_pages ADD COLUMN IF NOT EXISTS pending_hash TEXT`,
   ];
   for (const sql of migrations) {
     await pool.query(sql);
@@ -736,13 +742,13 @@ async function getCrawlPages(monitorId) {
   return q(`SELECT * FROM crawl_pages WHERE monitor_id = ? ORDER BY depth ASC, first_seen_ts ASC`, [monitorId]);
 }
 
-async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error, itemsJson, hashSnapshot, rawLinesJson) {
+async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCode, contentHash, contentLength, status, error, itemsJson, hashSnapshot, rawLinesJson, hashVer) {
   const now = Date.now();
   const existing = await qOne(`SELECT first_seen_ts, last_changed_ts FROM crawl_pages WHERE monitor_id = ? AND url = ?`, [monitorId, url]);
   const lastChangedTs = status === 'changed' || status === 'new' ? now : (existing ? existing.last_changed_ts : null);
   await run(
-    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error, items_json, hash_snapshot, raw_lines_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, title, status_code, content_hash, content_length, status, first_seen_ts, last_checked_ts, last_changed_ts, error, items_json, hash_snapshot, raw_lines_json, hash_ver, missed_runs, pending_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
      ON CONFLICT(monitor_id, url) DO UPDATE SET
        parent_url = COALESCE(crawl_pages.parent_url, excluded.parent_url),
        depth = LEAST(crawl_pages.depth, excluded.depth),
@@ -756,9 +762,59 @@ async function upsertCrawlPage(monitorId, url, parentUrl, depth, title, statusCo
        error = excluded.error,
        items_json = excluded.items_json,
        hash_snapshot = excluded.hash_snapshot,
-       raw_lines_json = excluded.raw_lines_json`,
-    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null, itemsJson ?? null, hashSnapshot ?? null, rawLinesJson ?? null]
+       raw_lines_json = excluded.raw_lines_json,
+       hash_ver = excluded.hash_ver,
+       missed_runs = 0,
+       pending_hash = NULL`,
+    [monitorId, url, parentUrl ?? null, depth, title ?? null, statusCode ?? null, contentHash ?? null, contentLength ?? null, status, existing ? existing.first_seen_ts : now, now, lastChangedTs, error ?? null, itemsJson ?? null, hashSnapshot ?? null, rawLinesJson ?? null, hashVer ?? null]
   );
+}
+
+// Страница проверена, но состояние (hash, текст, снимок) трогать нельзя: ничего не изменилось, либо
+// изменение не подтвердилось. Раньше любой сбой обнулял hash и текст страницы, и следующий удачный
+// обход рапортовал "изменилась" на весь её размер.
+async function touchCrawlPage(monitorId, url, statusCode, note) {
+  await run(
+    `UPDATE crawl_pages SET status = 'unchanged', status_code = ?, last_checked_ts = ?, error = ?, missed_runs = 0 WHERE monitor_id = ? AND url = ?`,
+    [statusCode ?? null, Date.now(), note ?? null, monitorId, url]
+  );
+}
+
+// Страница не загрузилась или ответила ошибкой: фиксируем ошибку, но НЕ стираем накопленное (hash, текст).
+// Для ещё не известной страницы заводим строку-ошибку (например, битая ссылка на сайте).
+async function touchCrawlPageError(monitorId, url, parentUrl, depth, statusCode, error) {
+  const now = Date.now();
+  const r = await run(
+    `UPDATE crawl_pages SET status = CASE WHEN status = 'removed' THEN status ELSE 'error' END, status_code = ?, last_checked_ts = ?, error = ?
+     WHERE monitor_id = ? AND url = ?`,
+    [statusCode ?? null, now, error ?? null, monitorId, url]
+  );
+  if (!r.rowCount) {
+    await run(
+      `INSERT INTO crawl_pages (monitor_id, url, parent_url, depth, status, status_code, first_seen_ts, last_checked_ts, error, missed_runs)
+       VALUES (?, ?, ?, ?, 'error', ?, ?, ?, ?, 0) ON CONFLICT(monitor_id, url) DO NOTHING`,
+      [monitorId, url, parentUrl ?? null, depth, statusCode ?? null, now, now, error ?? null]
+    );
+  }
+}
+
+async function setCrawlPageMissed(monitorId, url, missedRuns, statusCode, error) {
+  await run(
+    `UPDATE crawl_pages SET status = 'error', status_code = ?, last_checked_ts = ?, error = ?, missed_runs = ? WHERE monitor_id = ? AND url = ?`,
+    [statusCode ?? null, Date.now(), error ?? null, missedRuns, monitorId, url]
+  );
+}
+
+async function setCrawlPagePending(monitorId, url, pendingHash, note) {
+  await run(
+    `UPDATE crawl_pages SET pending_hash = ?, status = 'unchanged', last_checked_ts = ?, error = ?, missed_runs = 0 WHERE monitor_id = ? AND url = ?`,
+    [pendingHash ?? null, Date.now(), note ?? null, monitorId, url]
+  );
+}
+
+async function markCrawlPageRemoved(monitorId, url, runTs, summary) {
+  await run(`UPDATE crawl_pages SET status = 'removed', last_checked_ts = ?, last_changed_ts = ?, missed_runs = 0 WHERE monitor_id = ? AND url = ?`, [runTs, runTs, monitorId, url]);
+  await insertCrawlChange(monitorId, url, runTs, 'removed', null, null, summary || 'Страница больше не найдена при обходе');
 }
 
 async function markCrawlPagesRemoved(monitorId, seenUrls, runTs) {
@@ -898,6 +954,11 @@ module.exports = {
   getCrawlPages,
   upsertCrawlPage,
   markCrawlPagesRemoved,
+  touchCrawlPage,
+  touchCrawlPageError,
+  setCrawlPageMissed,
+  setCrawlPagePending,
+  markCrawlPageRemoved,
   insertCrawlChange,
   getCrawlChanges,
   getCrawlState,
