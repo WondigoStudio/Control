@@ -40,6 +40,21 @@ function parseUrls(env) {
   return list;
 }
 
+// pg считает sslmode=require/prefer/verify-ca в строке подключения синонимом verify-full и перекрывает им настройку ssl:
+// облачные базы с собственным центром сертификации (Aiven и др.) тогда падают с "self-signed certificate in certificate chain".
+// Поэтому параметры ssl* из адреса убираем и задаём TLS сами: шифрование есть, цепочка не проверяется
+// (так же было и раньше для Neon). sslmode=disable оставляет соединение без TLS.
+function sslFromUrl(raw) {
+  try {
+    const u = new URL(raw);
+    const mode = (u.searchParams.get('sslmode') || '').toLowerCase();
+    for (const k of ['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'uselibpqcompat', 'sslcompat']) u.searchParams.delete(k);
+    return { url: u.toString(), ssl: mode === 'disable' ? false : { rejectUnauthorized: false } };
+  } catch {
+    return { url: raw, ssl: { rejectUnauthorized: false } };
+  }
+}
+
 function labelOf(url, i) {
   try { const u = new URL(url); return `#${i + 1} ${u.hostname}`; } catch { return `#${i + 1}`; }
 }
@@ -59,10 +74,11 @@ class FailoverPool {
     this.log = opts.log || ((...a) => console.log('[db]', ...a));
     this.onSwitch = null;
     this.nodes = urls.map((url, i) => {
+      const c = sslFromUrl(url);
       const pool = new Pool({
-        connectionString: url,
+        connectionString: c.url,
         // Neon и большинство облачных Postgres требуют TLS (цепочка через их прокси)
-        ssl: { rejectUnauthorized: false },
+        ssl: c.ssl,
         max: Number(process.env.DB_POOL_MAX) || 5,
         connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
         query_timeout: QUERY_TIMEOUT_MS,
@@ -159,10 +175,8 @@ class FailoverPool {
       this.active = this.nodes[0];
       this.nodes.forEach((n) => { n.downUntil = 0; });
       this.log('ни одна база не ответила при старте');
-      if (this.applySchema) await this.applySchema(this.active.pool);
-      this.active.schemaOk = true;
-      this._timers();
-      return;
+      const why = this.nodes.map((n) => `${n.label}: ${n.lastError}`).join('; ');
+      throw new Error(`Ни одна база данных не отвечает. ${why}`);
     }
     const preferPrimary = /^(1|true|yes)$/i.test(process.env.DB_PREFER_PRIMARY || '');
     let best = alive[0];
@@ -269,4 +283,4 @@ function create(env = process.env) {
   return new FailoverPool(urls);
 }
 
-module.exports = { create, parseUrls, isInfraError, FailoverPool, SYNC_TABLES };
+module.exports = { create, parseUrls, sslFromUrl, isInfraError, FailoverPool, SYNC_TABLES };
