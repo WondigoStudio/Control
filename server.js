@@ -12,7 +12,7 @@ const { checkTrend } = require('./trendDetection');
 const { maybeSendInactivityReport, touchActivity } = require('./inactivityReport');
 const { runCrawl, getCrawlProgress } = require('./crawler');
 const {
-  initDb,
+  initDb, getDbStatus, setDbSwitchHandler, recheckDbs,
   getLastCheck, getHistory, getHistoryAggregated, getUptimePercent,
   getResponseStats, getSSLStatus, getDailyUptime, getMonitorSummary,
   getRestartLog, saveMultiLocationResult, getMultiLocationResult, getIncidentsForMonitor,
@@ -241,6 +241,12 @@ app.get('/api/monitors', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// --- Состояние баз данных (основная и запасные) ---
+app.get('/api/db-status', (req, res) => res.json({ now: Date.now(), nodes: getDbStatus() }));
+app.post('/api/db-status/recheck', async (req, res) => {
+  try { res.json({ now: Date.now(), nodes: await recheckDbs() }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- Экспорт для App Hub (по курсору, только чтение) ---
@@ -676,6 +682,11 @@ cron.schedule('*/15 * * * *', () => {
 
 // --- Запуск: сначала инициализируем БД, потом стартуем сервер и проверки ---
 async function start() {
+  // при переключении на запасную базу сообщаем владельцу (если уведомления настроены)
+  setDbSwitchHandler(async (from, to, err) => {
+    const { notify } = require('./notifier');
+    await notify('База данных переключена', `Основная база ${from.label} недоступна (${String(err && err.message || err).slice(0, 200)}). Теперь Control работает на ${to.label}. История проверок на новой базе начинается заново; настройки мониторов скопированы.`);
+  });
   await initDb();
   await migrateFromFileIfNeeded();
   await loadMonitorsFromDb();
