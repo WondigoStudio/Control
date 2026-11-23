@@ -14,20 +14,11 @@ types.setTypeParser(20, (val) => parseInt(val, 10));
 // каждом засыпании контейнера" (в отличие от локального SQLite на Render
 // Free — там ephemeral filesystem теряется при каждом spin-down простоя,
 // не только при деплое, см. https://render.com/docs/free).
-if (!process.env.DATABASE_URL) {
-  throw new Error(
-    'Не задан DATABASE_URL в переменных окружения. ' +
-    'Создай бесплатную базу на neon.tech и укажи connection string сюда. См. README.'
-  );
-}
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  // Neon (и большинство облачных Postgres) требует TLS; rejectUnauthorized
-  // false — потому что у Neon self-signed цепочка через их прокси, это
-  // стандартная рекомендация из их же документации для node-postgres.
-  ssl: { rejectUnauthorized: false },
-});
+//
+// Баз может быть несколько: DATABASE_URL, DATABASE_URL_2, DATABASE_URL_3 ...
+// Если активная умерла (нет соединения, кончилось место/квота), Control сам переключается на следующую.
+// Подробности и правила: dbpool.js и README ("Запасные базы").
+const pool = require('./dbpool').create();
 
 // Все функции ниже по файлу написаны с плейсхолдерами `?` (наследие от
 // SQLite/libSQL) — конвертируем в позиционные $1, $2... для pg на лету,
@@ -51,7 +42,7 @@ async function run(sql, args) {
   return pool.query(toPgQuery(sql), args || []);
 }
 
-async function initDb() {
+async function applySchema(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS checks (
       id SERIAL PRIMARY KEY,
@@ -222,8 +213,17 @@ async function initDb() {
 
   await pool.query(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`);
 
-  console.log('[db] Postgres (Neon): схема инициализирована');
+  console.log('[db] Postgres: схема инициализирована');
 }
+
+// Выбирает рабочую базу из списка, создаёт схему на всех живых и запускает пульс/копирование в запасные.
+async function initDb() {
+  await pool.start(applySchema);
+}
+
+function getDbStatus() { return pool.status(); }
+function setDbSwitchHandler(fn) { pool.onSwitch = fn; }
+async function recheckDbs() { return pool.recheck(); }
 
 // --- Экспорт для App Hub и очистка ---------------------------------------
 // Control не обязан хранить историю вечно: App Hub забирает записи по курсору
@@ -895,6 +895,9 @@ async function getCrawlImagesForPage(monitorId, pageUrl) {
 
 module.exports = {
   initDb,
+  getDbStatus,
+  setDbSwitchHandler,
+  recheckDbs,
   getEpoch,
   exportChecks,
   getMaxCheckId,
